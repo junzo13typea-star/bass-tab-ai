@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>BassTab AI - ベースTAB譜自動生成＆同期スタジオ</title>
+  <meta name="description" content="音楽ファイル（MP3/WAV）からベースラインを瞬時に自動耳コピ＆4弦TAB譜化。リアルなベース生音で同期スクロール再生・マイナスワン練習ができるWebスタジオ。">
+  <meta name="theme-color" content="#0a0f1d">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="studio-theme">
+
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand-box">
+        <div class="brand-icon">🎸</div>
+        <div>
+          <h1 class="brand-title">BassTab <span class="gradient-text">AI</span></h1>
+          <p class="brand-sub">AIベース自動採譜 ＆ 同期練習スタジオ (4弦特化)</p>
+        </div>
+      </div>
+
+      <!-- Quick Preset Selector -->
+      <div class="header-preset-box">
+        <label for="presetSelect" class="preset-label">プリセット楽曲で試す:</label>
+        <select id="presetSelect" class="preset-select">
+          <!-- Populated by JS -->
+        </select>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-container">
+
+    <!-- 1. Audio Upload Area (Drag & Drop) -->
+    <section class="upload-section">
+      <div class="drop-zone" id="dropZone">
+        <input type="file" id="fileInput" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg" style="display: none;">
+        <div class="drop-icon">🎵</div>
+        <div class="drop-text-box">
+          <h3 class="drop-title">MP3 / WAV 音声ファイルをドロップして自動採譜</h3>
+          <p class="drop-sub">またはここをクリックしてファイルを選択（市販音源、バンド練習録音など何でもOK）</p>
+        </div>
+        <div class="drop-badge">AIピッチ分離 ＆ 最適運指決定</div>
+      </div>
+    </section>
+
+    <!-- 2. Track Info & Practice Dashboard -->
+    <section class="track-header-card">
+      <div class="track-info-row">
+        <div>
+          <span class="track-status-pill">● 読込完了</span>
+          <h2 class="track-title" id="currentTrackTitle">Classic Rock 8-Beat</h2>
+          <p class="track-meta" id="currentTrackMeta">Rock • 128 BPM • Am ➔ F ➔ C ➔ G の王道8ビート</p>
+        </div>
+        <div class="time-counter-box">
+          <span class="tc-label">TIME</span>
+          <span class="tc-digits" id="timeDisplay">00:00 / 00:08</span>
+        </div>
+      </div>
+
+      <!-- Main Controls Row -->
+      <div class="controls-toolbar">
+        <!-- Play / Stop -->
+        <div class="btn-group-primary">
+          <button class="btn btn-primary" id="btnPlayPause">▶️ 再生</button>
+          <button class="btn btn-secondary" id="btnStop">⏹ 停止</button>
+        </div>
+
+        <!-- Speed (Tempo) Slider -->
+        <div class="control-unit speed-unit">
+          <div class="unit-header">
+            <span class="unit-title">再生速度</span>
+            <span class="unit-val" id="labelSpeed">1.00x</span>
+          </div>
+          <input type="range" id="sliderSpeed" min="0.5" max="1.5" step="0.05" value="1.0" class="custom-slider">
+        </div>
+
+        <!-- Mixer & Minus-One Controls -->
+        <div class="mixer-group">
+          <div class="mixer-channel">
+            <div class="channel-top">
+              <span class="ch-name">🎵 原曲</span>
+              <button class="btn-mute-toggle" id="btnMuteAudio" title="原曲の音をミュート">原曲ON</button>
+            </div>
+            <input type="range" id="sliderAudioVol" min="0" max="1" step="0.05" value="0.8" class="custom-slider vol-slider">
+          </div>
+
+          <div class="mixer-channel">
+            <div class="channel-top">
+              <span class="ch-name">🎸 ベース音</span>
+              <button class="btn-mute-toggle" id="btnMuteBass" title="ベース音をミュートして自分で練習">ベースON</button>
+            </div>
+            <input type="range" id="sliderBassVol" min="0" max="1.5" step="0.05" value="1.0" class="custom-slider vol-slider">
+          </div>
+        </div>
+
+        <!-- A-B Loop Controls -->
+        <div class="loop-group">
+          <button class="btn btn-sm btn-loop" id="btnSetLoopA" title="現在の再生位置をA点に設定">📍 A点</button>
+          <button class="btn btn-sm btn-loop" id="btnSetLoopB" title="現在の再生位置をB点に設定">📍 B点</button>
+          <button class="btn btn-sm btn-loop-toggle" id="btnToggleLoop" title="区間リピート練習">🔁 ループ</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Interactive 4-String TAB Notation View -->
+    <section class="tab-section">
+      <div class="section-bar">
+        <h3 class="sec-title">📜 4弦エレキベース TAB譜 (同期スクロール)</h3>
+        <span class="sec-hint">※TAB譜をクリックすると、その位置へ瞬時にジャンプ（シーク）します</span>
+      </div>
+
+      <div class="tab-view-container" id="tabViewContainer">
+        <canvas id="tabCanvas"></canvas>
+      </div>
+    </section>
+
+    <!-- 4. Interactive Electric Bass Fretboard -->
+    <section class="fretboard-section">
+      <div class="section-bar">
+        <h3 class="sec-title">🎸 リアルタイム運指フィンガーボード (24フレット)</h3>
+        <span class="sec-hint">※フレットをタップ・クリックしてベースの生音を鳴らせます</span>
+      </div>
+
+      <div class="fretboard-outer" id="fretboardContainer">
+        <!-- Rendered by fretboard.js -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Loading / Progress Overlay -->
+  <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+    <div class="loading-card">
+      <div class="loading-spinner"></div>
+      <h3 class="loading-title">AI音源分離 ＆ ベース採譜中</h3>
+      <p class="loading-text" id="loadingText">ベース周波数帯域を抽出中... (25%)</p>
+      <div class="loading-track">
+        <div class="loading-bar" id="loadingProgressBar" style="width: 25%;"></div>
+      </div>
+      <p class="loading-note">※端末内で安全に高速処理されます（サーバーへのファイル送信はありません）</p>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script type="module" src="js/app.js"></script>
+
+</body>
+</html>

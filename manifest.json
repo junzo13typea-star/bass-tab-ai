@@ -1,0 +1,18 @@
+{
+  "name": "BassTab AI - ベースTAB譜自動生成＆同期スタジオ",
+  "short_name": "BassTab AI",
+  "description": "音楽ファイル（MP3/WAV）からベースラインを瞬時に耳コピ＆4弦TAB譜化。リアルなベース音で同期スクロール再生・マイナスワン練習ができるWebスタジオ。",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0a0f1d",
+  "theme_color": "#0a0f1d",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
