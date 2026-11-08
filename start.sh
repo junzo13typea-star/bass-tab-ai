@@ -8,3 +8,4 @@ echo "👉 ブラウザで http://localhost:${PORT} を開いてください"
 sleep 1 && open "http://localhost:${PORT}" &
 
 python3 -m http.server $PORT
+

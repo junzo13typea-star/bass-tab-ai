@@ -156,3 +156,4 @@ export class BassSynth {
     return curve;
   }
 }
+

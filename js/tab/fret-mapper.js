@@ -193,3 +193,4 @@ export class FretMapper {
     return `${name}${octave}`;
   }
 }
+

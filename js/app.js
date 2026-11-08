@@ -268,3 +268,4 @@ window.addEventListener('DOMContentLoaded', () => {
   app.init();
   window.bassApp = app;
 });
+
