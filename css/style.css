@@ -21,7 +21,7 @@
   --radius-md: 14px;
   --radius-lg: 20px;
 
-  --font-main: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-main: "Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
 }
 
@@ -97,6 +97,15 @@ body::after {
   font-size: 2.2rem;
   line-height: 1;
   filter: drop-shadow(0 0 12px rgba(6, 182, 212, 0.6));
+}
+
+/* アプリアイコン画像（絵文字の代わりに正式アイコンを表示） */
+.brand-icon-img {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  box-shadow: 0 4px 16px rgba(6, 182, 212, 0.35);
 }
 
 .brand-title {
@@ -407,6 +416,23 @@ body::after {
 
 .custom-slider::-webkit-slider-thumb:hover {
   transform: scale(1.2);
+}
+
+/* Firefox用スライダー */
+.custom-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.8);
+  cursor: pointer;
+}
+
+.custom-slider::-moz-range-track {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
 }
 
 /* Mixer Group */
@@ -805,3 +831,348 @@ body::after {
   }
 }
 
+
+
+/* ===================================================
+   UIリファインメント (2026-11-09 Muse)
+   =================================================== */
+
+::selection {
+  background: rgba(6, 182, 212, 0.45);
+  color: #ffffff;
+}
+
+/* キーボード操作時のフォーカス表示 */
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+.drop-zone:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
+/* ドロップゾーンをキーボードでも操作可能に（HTML側でtabindex付与時） */
+.drop-zone:focus {
+  border-color: var(--accent-cyan);
+}
+
+/* フレットボードの横スクロールバーをテーマに合わせて細く */
+.fretboard-outer::-webkit-scrollbar {
+  height: 8px;
+}
+
+.fretboard-outer::-webkit-scrollbar-thumb {
+  background: rgba(56, 189, 248, 0.35);
+  border-radius: 4px;
+}
+
+.fretboard-outer::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+/* 数字表示の桁揃え */
+.tc-digits,
+.unit-val {
+  font-variant-numeric: tabular-nums;
+}
+
+/* モーション軽減設定への配慮 */
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner {
+    animation-duration: 2s;
+  }
+  * {
+    transition-duration: 0.01s !important;
+  }
+}
+
+
+/* ===================================================
+   テーマv2「Studio Modern」 (2026-11-09 Muse)
+   硬質な影をやめ、柔らかい光と余白でプロツールらしく
+   =================================================== */
+
+body {
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(56, 189, 248, 0.09) 0%, rgba(6, 9, 19, 0) 60%),
+    var(--bg-deep);
+}
+
+.main-container {
+  gap: 1.4rem;
+  margin-top: 1.4rem;
+}
+
+/* ヘッダー: 霧がかったガラス面に */
+.app-header {
+  background: rgba(8, 12, 24, 0.82);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  padding: 0.9rem 1.4rem;
+}
+
+.brand-title {
+  letter-spacing: 0.01em;
+}
+
+.header-preset-box {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+}
+
+/* ドロップゾーン: 上品なアップロードカードに */
+.drop-zone {
+  background: linear-gradient(135deg, rgba(14, 24, 46, 0.85) 0%, rgba(8, 12, 24, 0.9) 100%);
+  border: 1.5px dashed rgba(56, 189, 248, 0.4);
+  border-radius: 22px;
+  padding: 1.8rem 2rem;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+}
+
+.drop-icon {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(99, 102, 241, 0.22));
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 20px;
+}
+
+.drop-badge {
+  background: linear-gradient(135deg, #22d3ee, #818cf8);
+  color: #081120;
+  border-radius: 999px;
+  padding: 0.5rem 1rem;
+}
+
+/* カード面の統一: 柔らかい影と大きめの角 */
+.track-header-card,
+.tab-section,
+.fretboard-section {
+  background: linear-gradient(180deg, rgba(17, 26, 48, 0.88) 0%, rgba(11, 17, 33, 0.92) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 22px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+  padding: 1.6rem;
+}
+
+/* ボタン: 硬い立体影をやめ、光るフラットボタンに */
+.btn-primary {
+  background: linear-gradient(135deg, #22d3ee 0%, #0ea5e9 55%, #6366f1 130%);
+  color: #06121f;
+  border-radius: 13px;
+  box-shadow: 0 8px 22px rgba(14, 165, 233, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.btn-primary:hover {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: translateY(1px);
+  box-shadow: 0 3px 10px rgba(14, 165, 233, 0.3);
+}
+
+.btn-primary.playing {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  box-shadow: 0 8px 22px rgba(245, 158, 11, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 13px;
+  box-shadow: none;
+}
+
+.btn-secondary:active {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+.btn-loop,
+.btn-loop-toggle {
+  border-radius: 10px;
+}
+
+/* コントロール類: 面を沈めて一体感を出す */
+.control-unit,
+.mixer-channel {
+  background: rgba(2, 6, 17, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 14px;
+  padding: 0.6rem 0.9rem;
+}
+
+/* スライダー: 白い芯＋シアンのリングで高級感のあるつまみに */
+.custom-slider {
+  height: 6px;
+  background: rgba(56, 189, 248, 0.22);
+  border-radius: 999px;
+}
+
+.custom-slider::-webkit-slider-thumb {
+  width: 18px;
+  height: 18px;
+  background: #ffffff;
+  border: 2.5px solid var(--accent-cyan);
+  box-shadow: 0 2px 10px rgba(6, 182, 212, 0.55);
+}
+
+.custom-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  background: #ffffff;
+  border: 2.5px solid var(--accent-cyan);
+  box-shadow: 0 2px 10px rgba(6, 182, 212, 0.55);
+}
+
+.custom-slider::-moz-range-track {
+  background: rgba(56, 189, 248, 0.22);
+}
+
+/* 時間表示: 暗い窪みにシアンの数字 */
+.time-counter-box {
+  background: rgba(2, 6, 17, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 14px;
+}
+
+.tc-digits {
+  color: #e0f2fe;
+  text-shadow: 0 0 14px rgba(56, 189, 248, 0.35);
+}
+
+/* セクション見出し: 左にシアンのバーを添える */
+.sec-title {
+  position: relative;
+  padding-left: 0.7rem;
+}
+
+.sec-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 1.05em;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #22d3ee, #6366f1);
+}
+
+/* TAB譜ビュー: 角と枠をカードに合わせる */
+.tab-view-container {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 16px;
+}
+
+/* フレットボード: 木の質感は残し、枠を端正に */
+.fretboard-outer {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+}
+
+/* ローディングカード: 枠の光を柔らかく */
+.loading-card {
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65), 0 0 44px rgba(6, 182, 212, 0.18);
+}
+
+/* ===================================================
+   夜間改善 #8 (2026-11-09 Muse)
+   フレットボードの弦ラベル表示とTAB譜まわりの視認性改善
+   CSSのみの追記。JS・既存ルール・HTMLは不変。
+   tab-renderer.js の描画色（キャンバス内の弦ラベル色など）は触らない。
+   =================================================== */
+
+/* --- フレットボード: ナット列に弦ラベル (G/D/A/E + 何弦か) を表示 --- */
+/* fretboard.js は弦ラベル要素を生成しないため、ナット列セルの ::after で表示する。 */
+/* セル自体はタップで発音するため、ラベルは pointer-events: none で透過させる。 */
+.fret-col.fret-nut .fret-cell::after {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  color: #e0f2fe;
+  background: rgba(2, 6, 17, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 6px;
+  padding: 3px 4px;
+  white-space: nowrap;
+}
+
+.fret-col.fret-nut .fret-cell.string-1::after { content: 'G 1弦'; }
+.fret-col.fret-nut .fret-cell.string-2::after { content: 'D 2弦'; }
+.fret-col.fret-nut .fret-cell.string-3::after { content: 'A 3弦'; }
+.fret-col.fret-nut .fret-cell.string-4::after { content: 'E 4弦'; }
+
+/* ナット列で発音したときはラベルの代わりに既存のネオン発光を表示する */
+.fret-col.fret-nut .fret-cell.hit-active::after {
+  content: '';
+  left: auto;
+  top: auto;
+  transform: none;
+  z-index: 10;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #38bdf8 20%, #0284c7 80%);
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 16px #38bdf8, 0 0 32px #0284c7;
+  padding: 0;
+  animation: neonPop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+/* --- フレット番号ラベル: 明るくし、ドット付きフレットを強調 --- */
+.fret-number-label {
+  font-size: 12px;
+  color: #cbd5e1;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+/* インレイ・ドットのあるフレット番号は白く強調 */
+.fret-col[data-fret="3"] .fret-number-label,
+.fret-col[data-fret="5"] .fret-number-label,
+.fret-col[data-fret="7"] .fret-number-label,
+.fret-col[data-fret="9"] .fret-number-label,
+.fret-col[data-fret="15"] .fret-number-label,
+.fret-col[data-fret="17"] .fret-number-label,
+.fret-col[data-fret="19"] .fret-number-label,
+.fret-col[data-fret="21"] .fret-number-label {
+  color: #ffffff;
+}
+
+/* オクターブ（12・24フレット）はシアンで目立たせる */
+.fret-col[data-fret="12"] .fret-number-label,
+.fret-col[data-fret="24"] .fret-number-label {
+  color: #38bdf8;
+}
+
+/* ナット表示はアンバーで数字と区別する */
+.fret-col[data-fret="0"] .fret-number-label {
+  color: #fbbf24;
+}
+
+/* --- TAB譜ビュー: 右端に薄いフェードを付け、横スクロールを示唆 --- */
+.tab-view-container {
+  position: relative;
+}
+
+.tab-view-container::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 36px;
+  background: linear-gradient(90deg, rgba(8, 12, 24, 0) 0%, rgba(8, 12, 24, 0.35) 100%);
+  border-radius: 0 16px 16px 0;
+  pointer-events: none;
+  z-index: 2;
+}
