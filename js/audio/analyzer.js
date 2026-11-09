@@ -385,9 +385,8 @@ export class AudioAnalyzer {
       if (Math.abs(len - beatLen) <= 0.03) { wsum += score; vsum += score * len; }
     }
     if (wsum > 0) beatLen = vsum / wsum;
-    const bpm = Math.round((60 / beatLen) * 10) / 10;
 
-    // 位相: オンセットの (time mod beatLen) の最頻ビン中心を拍位置とする
+    // 位相の初期推定: オンセットの (time mod beatLen) の最頻ビン中心を拍位置とする
     const bins = 20;
     const phaseVotes = new Array(bins).fill(0);
     for (const n of notes) {
@@ -398,8 +397,85 @@ export class AudioAnalyzer {
     for (let i = 0; i < bins; i++) {
       if (phaseVotes[i] > phaseVotes[bestBin]) bestBin = i;
     }
-    const offset = ((bestBin + 0.5) / bins) * beatLen;
+    let offset = ((bestBin + 0.5) / bins) * beatLen;
 
+    // 精密化 (1): テンポ候補を走査し、8分グリッドへの当てはまりが最良の beatLen を選ぶ。
+    // 投票だけでは端数BPM (例: 188) で1〜2%外れ、曲の後半ほどグリッドがずれる (drift)。
+    // ラベル付けに依存しないスコア方式なので、初期誤差が大きくても正しい周期へ収束する。
+    {
+      // 候補グリッドに対する位相 (円周統計) と整合スコア
+      const gridFit = (candBeatLen) => {
+        const step8 = candBeatLen / 2;
+        let cosSum = 0, sinSum = 0;
+        for (const n of notes) {
+          const th = 2 * Math.PI * (n.time / step8);
+          cosSum += Math.cos(th);
+          sinSum += Math.sin(th);
+        }
+        let phase = Math.atan2(sinSum, cosSum) / (2 * Math.PI) * step8;
+        if (phase < 0) phase += step8;
+        const sigma = step8 * 0.25;
+        let score = 0;
+        for (const n of notes) {
+          const d = Math.abs(n.time - (phase + Math.round((n.time - phase) / step8) * step8));
+          score += Math.exp(-(d * d) / (2 * sigma * sigma));
+        }
+        return { phase, score };
+      };
+
+      let bestBeatLen = beatLen;
+      let bestFit = gridFit(beatLen);
+      const CANDIDATES = 160;
+      for (let i = 0; i <= CANDIDATES; i++) {
+        const cand = beatLen * (0.965 + (0.07 * i) / CANDIDATES);
+        if (Math.abs(cand - beatLen) < 1e-9) continue;
+        const fit = gridFit(cand);
+        if (fit.score > bestFit.score) { bestFit = fit; bestBeatLen = cand; }
+      }
+      beatLen = bestBeatLen;
+      offset = bestFit.phase; // 8分位相 (拍位相は後段で決める)
+
+      // 精密化 (2): 走査で得た周期を初期値に、最小二乗フィットで仕上げる
+      let step8 = beatLen / 2;
+      for (let iter = 0; iter < 4; iter++) {
+        const pts = [];
+        for (const n of notes) {
+          const k = Math.round((n.time - offset) / step8);
+          const resid = n.time - (offset + k * step8);
+          if (Math.abs(resid) <= step8 * 0.32) pts.push([k, n.time]);
+        }
+        if (pts.length < 8) break;
+        let sk = 0, st = 0, skk = 0, skt = 0;
+        for (const [k, t] of pts) { sk += k; st += t; skk += k * k; skt += k * t; }
+        const denom = pts.length * skk - sk * sk;
+        if (Math.abs(denom) < 1e-9) break;
+        const b = (pts.length * skt - sk * st) / denom;
+        const a = (st - b * sk) / pts.length;
+        if (b < 0.12 || b > 0.62) break;
+        const newBeatLen = b * 2;
+        const change = Math.abs(newBeatLen - beatLen);
+        beatLen = newBeatLen;
+        step8 = b;
+        offset = ((a % step8) + step8) % step8; // 8分位相として保持
+        if (change < 0.00005) break;
+      }
+
+      // 拍位相の決定: 8分位相と、それを半拍ずらした候補のうち、
+      // 拍位置に乗る音のベロシティ合計が大きい方を拍の頭とする (8分主体の曲の半拍ずれ対策)
+      const beatScore = (phase) => {
+        let s = 0;
+        for (const n of notes) {
+          const d = Math.abs(n.time - (phase + Math.round((n.time - phase) / beatLen) * beatLen));
+          if (d < beatLen * 0.12) s += (n.velocity || 0.7);
+        }
+        return s;
+      };
+      const phaseA = offset;
+      const phaseB = offset + step8;
+      offset = beatScore(phaseB) > beatScore(phaseA) * 1.15 ? phaseB : phaseA;
+    }
+
+    const bpm = Math.round((60 / beatLen) * 10) / 10;
     return { bpm, offset };
   }
 
