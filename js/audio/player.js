@@ -1,9 +1,15 @@
 /**
  * BassTab AI - Audio & TAB Synchronized Player
- * 
+ *
  * 楽曲オーディオ再生とベースシンセ発音、TAB譜スクロール、指板発光を
  * サブミリ秒精度で同期制御するスタジオ・プレイヤーエンジン。
+ *
+ * 再生速度変更時はピッチ保持タイムストレッチ (time-stretch.js) を使い、
+ * 生成が済むまでは従来の playbackRate (デチューン) でフォールバックする。
+ * タイムライン (currentTime / スケジューラ) は常に原曲時間軸で統一される。
  */
+
+import { createStretchedBufferAsync } from './time-stretch.js';
 
 export class SyncPlayer {
   constructor(audioContext, bassSynth) {
@@ -39,12 +45,25 @@ export class SyncPlayer {
     this.lookaheadMs = 25.0;
     this.scheduleAheadTime = 0.12; // 120ms 先まで予約
 
+    // ピッチ保持タイムストレッチ用キャッシュ (rate -> AudioBuffer)
+    this.stretchCache = new Map();
+    this.stretchPending = new Set();
+    this.stretchSourceBuffer = null;
+    this.activeBuffer = null;      // 現在の再生に使っているバッファ
+    this.activeBufferScale = 1;     // activeBuffer の時間スケール (原曲=1, ストレッチ済み≒1/rate)
+
     // コールバック
     this.onTimeUpdate = null; // (currentTime, progress) => {}
     this.onNoteHit = null;    // (note) => {}
     this.onPlayStateChange = null; // (isPlaying) => {}
+    this.onStretchState = null;    // (state: 'generating'|'ready'|'failed'|'idle', rate) => {}
 
     this.initAudioNodes();
+  }
+
+  notifyStretchState(state, rate) {
+    if (!this.onStretchState) return;
+    try { this.onStretchState(state, rate); } catch (e) { /* UI側の失敗で再生を止めない */ }
   }
 
   initAudioNodes() {
@@ -56,6 +75,16 @@ export class SyncPlayer {
   loadTrack(audioBuffer, tabNotes) {
     this.stop();
     this.audioBuffer = audioBuffer;
+    // 曲が変わったらストレッチ済みキャッシュを破棄
+    if (this.stretchSourceBuffer !== audioBuffer) {
+      const hadPending = this.stretchPending.size > 0;
+      this.stretchCache.clear();
+      this.stretchPending.clear();
+      this.stretchSourceBuffer = audioBuffer;
+      if (hadPending) this.notifyStretchState('idle', this.playbackRate);
+    }
+    this.activeBuffer = audioBuffer;
+    this.activeBufferScale = 1;
     this.tabNotes = tabNotes || [];
     this.duration = audioBuffer ? audioBuffer.duration : (tabNotes.length > 0 ? tabNotes[tabNotes.length - 1].time + 2 : 0);
     this.loopStart = 0;
@@ -76,12 +105,22 @@ export class SyncPlayer {
 
     // 1. 元音源オーディオの再生スタート
     if (this.audioBuffer) {
+      // ピッチ保持バッファが用意できていればそれを使い、なければデチューン再生で
+      // フォールバックしつつ裏で生成を開始する
+      const stretched = this.playbackRate !== 1 ? this.stretchCache.get(this.playbackRate) : null;
+      if (this.playbackRate !== 1 && !stretched) {
+        this.ensureStretchedBuffer(this.playbackRate);
+      }
+      const useBuffer = stretched || this.audioBuffer;
+      this.activeBuffer = useBuffer;
+      this.activeBufferScale = stretched ? useBuffer.duration / this.audioBuffer.duration : 1;
+
       this.sourceNode = this.ctx.createBufferSource();
-      this.sourceNode.buffer = this.audioBuffer;
-      this.sourceNode.playbackRate.value = this.playbackRate;
+      this.sourceNode.buffer = useBuffer;
+      this.sourceNode.playbackRate.value = stretched ? 1 : this.playbackRate;
       this.sourceNode.connect(this.audioGainNode);
 
-      const offset = Math.max(0, Math.min(this.pauseOffset, this.audioBuffer.duration));
+      const offset = Math.max(0, Math.min(this.pauseOffset * this.activeBufferScale, useBuffer.duration));
       this.sourceNode.start(0, offset);
 
       this.sourceNode.onended = () => {
@@ -151,12 +190,57 @@ export class SyncPlayer {
 
   setPlaybackRate(rate) {
     this.playbackRate = Math.max(0.5, Math.min(1.75, rate));
+    if (this.playbackRate !== 1 && this.audioBuffer) {
+      this.ensureStretchedBuffer(this.playbackRate);
+    }
     if (this.isPlaying) {
       const currentPos = this.currentTime;
       this.pause();
       this.pauseOffset = currentPos;
       this.play();
     }
+  }
+
+  /**
+   * 指定速度のピッチ保持バッファを非同期生成してキャッシュする
+   * 生成完了時に再生中かつ速度が一致していれば、現在位置のまま切替える
+   */
+  ensureStretchedBuffer(rate) {
+    if (!this.audioBuffer || rate === 1) return;
+    if (this.stretchCache.has(rate) || this.stretchPending.has(rate)) return;
+
+    const sourceBuffer = this.audioBuffer;
+    this.stretchPending.add(rate);
+    this.notifyStretchState('generating', rate);
+
+    createStretchedBufferAsync(sourceBuffer, rate)
+      .then((stretched) => {
+        this.stretchPending.delete(rate);
+        // 生成中に別の曲へ切り替わっていたら破棄
+        if (this.stretchSourceBuffer !== sourceBuffer || this.audioBuffer !== sourceBuffer) {
+          this.notifyStretchState('idle', rate);
+          return;
+        }
+        this.stretchCache.set(rate, stretched);
+        this.notifyStretchState('ready', rate);
+
+        if (this.isPlaying && this.playbackRate === rate && this.activeBuffer !== stretched) {
+          const currentPos = this.currentTime;
+          this.pause();
+          this.pauseOffset = currentPos;
+          this.play();
+        }
+      })
+      .catch((err) => {
+        this.stretchPending.delete(rate);
+        // 生成中に別の曲へ切り替わっていた場合は失敗として扱わない
+        if (this.stretchSourceBuffer !== sourceBuffer || this.audioBuffer !== sourceBuffer) {
+          this.notifyStretchState('idle', rate);
+        } else {
+          this.notifyStretchState('failed', rate);
+        }
+        console.warn('ピッチ保持ストレッチの生成に失敗しました (デチューン再生を継続):', err);
+      });
   }
 
   setAudioVolume(vol) {

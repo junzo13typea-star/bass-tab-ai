@@ -672,6 +672,7 @@ body::after {
 .fret-cell.string-2::before { height: 2.2px; }
 .fret-cell.string-3::before { height: 3.2px; }
 .fret-cell.string-4::before { height: 4.4px; }
+.fret-cell.string-5::before { height: 5.6px; }
 
 /* リアルタイム発光演出 (ネオンヒット) */
 .fret-cell.hit-active::after {
@@ -1111,6 +1112,7 @@ body {
 .fret-col.fret-nut .fret-cell.string-2::after { content: 'D 2弦'; }
 .fret-col.fret-nut .fret-cell.string-3::after { content: 'A 3弦'; }
 .fret-col.fret-nut .fret-cell.string-4::after { content: 'E 4弦'; }
+.fret-col.fret-nut .fret-cell.string-5::after { content: 'B 5弦'; }
 
 /* ナット列で発音したときはラベルの代わりに既存のネオン発光を表示する */
 .fret-col.fret-nut .fret-cell.hit-active::after {

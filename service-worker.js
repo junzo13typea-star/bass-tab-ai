@@ -1,5 +1,5 @@
 // BassTab AI - Service Worker
-const CACHE_NAME = 'basstab-ai-v1';
+const CACHE_NAME = 'basstab-ai-v2';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -9,6 +9,7 @@ const ASSETS_TO_CACHE = [
   './js/audio/analyzer.js',
   './js/audio/bass-synth.js',
   './js/audio/player.js',
+  './js/audio/time-stretch.js',
   './js/tab/fret-mapper.js',
   './js/tab/tab-renderer.js',
   './js/ui/fretboard.js',

@@ -81,8 +81,11 @@ export class Controls {
     this.initFileDrop();
 
     // 10. キーボードショートカット (スペースキーで再生/停止)
+    // フォーム要素やボタンにフォーカスがある場合は、その要素本来のスペース動作と
+    // 二重発火しないよう再生切替を行わない
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space' && e.target.tagName !== 'INPUT') {
+      const tag = e.target && e.target.tagName;
+      if (e.code === 'Space' && !['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA'].includes(tag)) {
         e.preventDefault();
         this.cb.onTogglePlay();
       }
@@ -122,6 +125,8 @@ export class Controls {
       if (files && files.length > 0) {
         this.cb.onFileSelected(files[0]);
       }
+      // 同じファイルを再選択しても change が発火するようリセットする
+      e.target.value = '';
     });
 
     dropZone.addEventListener('click', () => {

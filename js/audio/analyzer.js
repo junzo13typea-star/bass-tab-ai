@@ -88,13 +88,29 @@ export class AudioAnalyzer {
 
   /**
    * フィルタリング済みバッファからベースラインのノートイベント列を抽出
-   * @param {AudioBuffer} bassBuffer 
+   * @param {AudioBuffer} bassBuffer
    * @param {Function} onProgress 進捗コールバック (0.0〜1.0)
+   * @param {Object} [options]
+   * @param {'low'|'normal'|'high'} [options.sensitivity] 検出感度 (デフォルト 'normal' = 従来挙動)
+   * @param {'4'|'5'} [options.tuning] チューニング (デフォルト '4'。'5' で Low B = MIDI 23 まで拡張)
    * @returns {Array<{ time: number, duration: number, midi: number, freq: number, velocity: number }>}
    */
-  async analyzeBassline(bassBuffer, onProgress = null) {
+  async analyzeBassline(bassBuffer, onProgress = null, options = {}) {
     const data = bassBuffer.getChannelData(0);
     const sampleRate = bassBuffer.sampleRate;
+
+    // 感度プリセット (normal は従来の固定値と完全一致)
+    const sensConfig = {
+      low:    { noiseMul: 0.12, floor: 0.016, clarity: 0.70 },
+      normal: { noiseMul: 0.06, floor: 0.008, clarity: 0.60 },
+      high:   { noiseMul: 0.03, floor: 0.004, clarity: 0.50 }
+    }[options.sensitivity] || { noiseMul: 0.06, floor: 0.008, clarity: 0.60 };
+
+    // チューニング (5弦時は Low B まで解析下限を広げる)
+    const is5String = options.tuning === '5';
+    const minMidi = is5String ? 23 : 28;
+    const minFreq = is5String ? 29 : 38;
+    const yinMinFreq = is5String ? 30 : 40;
 
     // 分析パラメータ
     const hopSize = Math.floor(sampleRate * 0.02); // 20ms ステップ
@@ -120,7 +136,7 @@ export class AudioAnalyzer {
       let freq = 0;
       let clarity = 0;
       if (rms > 0.005) {
-        const pitchRes = this.detectYinPitch(frame, sampleRate, yinBuffer);
+        const pitchRes = this.detectYinPitch(frame, sampleRate, yinBuffer, yinMinFreq);
         freq = pitchRes.freq;
         clarity = pitchRes.clarity;
       }
@@ -135,6 +151,11 @@ export class AudioAnalyzer {
       if (onProgress && i % 100 === 0) {
         onProgress(0.1 + (i / totalHops) * 0.6);
       }
+
+      // メインスレッドを定期的に解放し、進捗表示の再描画とUI応答を可能にする
+      if (i % 50 === 49) {
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
 
     // 2. オンセット（発音点）の検出とノートグルーピング
@@ -145,7 +166,7 @@ export class AudioAnalyzer {
     // 動的ノイズフロア
     let maxRms = 0;
     for (const f of frameAnalysis) if (f.rms > maxRms) maxRms = f.rms;
-    const noiseThreshold = Math.max(0.008, maxRms * 0.06);
+    const noiseThreshold = Math.max(sensConfig.floor, maxRms * sensConfig.noiseMul);
 
     for (let i = 0; i < frameAnalysis.length; i++) {
       const f = frameAnalysis[i];
@@ -155,11 +176,11 @@ export class AudioAnalyzer {
       const isAttack = (f.rms > noiseThreshold) && (f.rms > prev.rms * 1.55);
       const isPitchChange = currentNote && f.freq > 0 && Math.abs(this.freqToMidi(f.freq) - currentNote.midi) >= 0.8;
 
-      if (f.rms > noiseThreshold && f.freq >= 38 && f.freq <= 400 && f.clarity > 0.6) {
+      if (f.rms > noiseThreshold && f.freq >= minFreq && f.freq <= 400 && f.clarity > sensConfig.clarity) {
         const midi = Math.round(this.freqToMidi(f.freq));
 
-        // 4弦ベースの音域 (E1=28 〜 G4=67) に制約
-        if (midi >= 28 && midi <= 67) {
+        // ベースの音域 (下限はチューニング依存: 4弦 E1=28 / 5弦 B0=23 〜 G4=67) に制約
+        if (midi >= minMidi && midi <= 67) {
           if (!currentNote || isAttack || isPitchChange) {
             // 前のノートを確定
             if (currentNote) {
@@ -191,6 +212,11 @@ export class AudioAnalyzer {
       if (onProgress && i % 200 === 0) {
         onProgress(0.7 + (i / frameAnalysis.length) * 0.3);
       }
+
+      // ノート化ループでも定期的に譲歩する
+      if (i % 100 === 99) {
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
 
     if (currentNote) {
@@ -207,11 +233,11 @@ export class AudioAnalyzer {
   /**
    * YIN ピッチ検出アルゴリズム (低音域特化)
    */
-  detectYinPitch(frame, sampleRate, yinBuffer) {
+  detectYinPitch(frame, sampleRate, yinBuffer, minFreq = 40) {
     const halfSize = yinBuffer.length;
-    // 最小・最大ラグ (ベース音域 40Hz〜400Hz)
+    // 最小・最大ラグ (ベース音域 minFreq〜400Hz)
     const minLag = Math.floor(sampleRate / 400); // ~110 @ 44.1kHz
-    const maxLag = Math.floor(sampleRate / 40);  // ~1100 @ 44.1kHz
+    const maxLag = Math.floor(sampleRate / minFreq);  // ~1100 @ 44.1kHz (40Hz時)
     const boundLag = Math.min(halfSize - 1, maxLag);
 
     // 1. 差分平方和
@@ -302,6 +328,100 @@ export class AudioAnalyzer {
     }
 
     return merged;
+  }
+
+  /**
+   * ノート列のオンセット間隔からテンポ (BPM) と拍の位相 (オフセット) を推定する
+   * @returns {{ bpm: number, offset: number }} offset は最初の拍が来る時刻 (秒)
+   */
+  estimateTempo(notes) {
+    if (!notes || notes.length < 4) return { bpm: 120, offset: 0 };
+
+    // オンセット間隔 (IOI) を 0.30〜1.05 秒 (約57〜200BPMの1拍) に折りたたんで投票
+    // 1つ先だけでなく2〜3つ先の音との間隔も見ることで、8分音符主体の曲を2倍のテンポと誤認しない
+    const votes = new Map();
+    const lagWeights = [1, 0.7, 0.45];
+    for (let lag = 1; lag <= 3; lag++) {
+      for (let i = lag; i < notes.length; i++) {
+        const ioi = notes[i].time - notes[i - lag].time;
+        if (ioi < 0.09 || ioi > 2.4) continue;
+        let folded = ioi;
+        while (folded < 0.30) folded *= 2;
+        while (folded > 1.05) folded /= 2;
+        const key = Math.round(folded * 200); // 5ms刻み
+        const w = lagWeights[lag - 1] * (ioi >= 0.18 ? 1 : 0.5);
+        votes.set(key, (votes.get(key) || 0) + w);
+      }
+    }
+    if (votes.size === 0) return { bpm: 120, offset: 0 };
+
+    const scoreNear = (targetLen) => {
+      let s = 0;
+      for (const [key, score] of votes) {
+        if (Math.abs(key / 200 - targetLen) <= 0.03) s += score;
+      }
+      return s;
+    };
+
+    let bestKey = 0;
+    let bestScore = -1;
+    for (const [key, score] of votes) {
+      if (score > bestScore) { bestScore = score; bestKey = key; }
+    }
+    let beatLen = bestKey / 200;
+
+    // 倍テンポ誤認の補正: 170BPM超の候補で、半分のテンポにも十分な支持があれば半分を採用
+    if (60 / beatLen > 170 && beatLen * 2 <= 1.05) {
+      if (scoreNear(beatLen * 2) >= scoreNear(beatLen) * 0.55) {
+        beatLen = beatLen * 2;
+      }
+    }
+
+    // 近傍ビンの重み付き平均で推定を滑らかにする
+    let wsum = 0;
+    let vsum = 0;
+    for (const [key, score] of votes) {
+      const len = key / 200;
+      if (Math.abs(len - beatLen) <= 0.03) { wsum += score; vsum += score * len; }
+    }
+    if (wsum > 0) beatLen = vsum / wsum;
+    const bpm = Math.round((60 / beatLen) * 10) / 10;
+
+    // 位相: オンセットの (time mod beatLen) の最頻ビン中心を拍位置とする
+    const bins = 20;
+    const phaseVotes = new Array(bins).fill(0);
+    for (const n of notes) {
+      const phase = ((n.time % beatLen) + beatLen) % beatLen;
+      phaseVotes[Math.floor(phase / beatLen * bins) % bins]++;
+    }
+    let bestBin = 0;
+    for (let i = 0; i < bins; i++) {
+      if (phaseVotes[i] > phaseVotes[bestBin]) bestBin = i;
+    }
+    const offset = ((bestBin + 0.5) / bins) * beatLen;
+
+    return { bpm, offset };
+  }
+
+  /**
+   * 検出ノートを16分音符グリッドへ量子化する (最も近いグリッド位置へ吸着)
+   */
+  quantizeNotes(notes, bpm, offset = 0) {
+    if (!notes || notes.length === 0 || !bpm) return notes;
+    const step = (60 / bpm) / 4; // 16分音符の長さ
+    const snapped = notes.map(n => {
+      const k = Math.round((n.time - offset) / step);
+      return { ...n, time: offset + k * step };
+    });
+    // 次の音と重ならないよう長さを整える
+    for (let i = 0; i < snapped.length; i++) {
+      const cur = snapped[i];
+      const next = snapped[i + 1];
+      let end = cur.time + cur.duration;
+      if (next && end > next.time) end = next.time;
+      cur.duration = Math.max(0.06, end - cur.time);
+    }
+    return snapped;
   }
 }
 

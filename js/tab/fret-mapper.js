@@ -7,26 +7,38 @@
  */
 
 export class FretMapper {
-  constructor() {
-    // 4弦ベースの標準チューニング (開放弦のMIDIノート番号)
-    // 弦番号: 1弦=G(43), 2弦=D(38), 3弦=A(33), 4弦=E(28)
+  constructor(tuning = '4') {
+    this.MAX_FRETS = 24;
+    this.setTuning(tuning);
+  }
+
+  /**
+   * チューニング設定 ('4' = E-A-D-G / '5' = B-E-A-D-G)
+   * 弦番号: 1弦=G(43), 2弦=D(38), 3弦=A(33), 4弦=E(28), 5弦=B(23)
+   */
+  setTuning(tuning) {
+    this.tuning = tuning === '5' ? '5' : '4';
     this.STRING_OPEN_MIDI = {
       1: 43, // 1弦 G2
       2: 38, // 2弦 D2
       3: 33, // 3弦 A1
       4: 28  // 4弦 E1
     };
-    this.MAX_FRETS = 24;
+    if (this.tuning === '5') {
+      this.STRING_OPEN_MIDI[5] = 23; // 5弦 B0 (Low B)
+    }
+    this.stringCount = this.tuning === '5' ? 5 : 4;
+    this.minMidi = this.tuning === '5' ? 23 : 28;
   }
 
   /**
    * 単一のMIDIノート番号から、演奏可能なすべての (弦, フレット) 候補を返す
-   * @param {number} midi MIDIノート番号 (28〜67)
+   * @param {number} midi MIDIノート番号 (下限はチューニング依存 〜 67)
    * @returns {Array<{ string: number, fret: number }>}
    */
   getCandidates(midi) {
     const candidates = [];
-    for (let stringNum = 4; stringNum >= 1; stringNum--) {
+    for (let stringNum = this.stringCount; stringNum >= 1; stringNum--) {
       const openMidi = this.STRING_OPEN_MIDI[stringNum];
       const fret = midi - openMidi;
       if (fret >= 0 && fret <= this.MAX_FRETS) {
@@ -51,7 +63,7 @@ export class FretMapper {
       let cands = this.getCandidates(note.midi);
       // 万が一音域外の場合は最も近いフレットにクリップ
       if (cands.length === 0) {
-        if (note.midi < 28) cands = [{ string: 4, fret: 0 }];
+        if (note.midi < this.minMidi) cands = [{ string: this.stringCount, fret: 0 }];
         else cands = [{ string: 1, fret: 24 }];
       }
       return cands;

@@ -11,12 +11,25 @@ export class FretboardUI {
     this.container = containerElement;
     this.onFretClick = onFretClick; // (stringNum, fret) => {}
     this.numFrets = 24;
+    this.stringCount = 4; // チューニング連動 ('5' でB弦行を追加)
 
-    // 開放弦のMIDIピッチ (4弦=28, 3弦=33, 2弦=38, 1弦=43)
-    this.openMidi = { 1: 43, 2: 38, 3: 33, 4: 28 };
+    // 開放弦のMIDIピッチ (4弦=28, 3弦=33, 2弦=38, 1弦=43 / 5弦=23)
+    this.openMidi = { 1: 43, 2: 38, 3: 33, 4: 28, 5: 23 };
     this.activeMarkers = new Set(); // 現在発光中の "string-fret" キー
 
     this.render();
+  }
+
+  /**
+   * チューニングを設定し、弦の行数を連動させる ('4' = 4行 / '5' = B弦行を追加)
+   * 注: .fret-cell.string-5 の見た目は Mac 側 CSS の対応が必要 (UI-FIXLOG のTODO参照)
+   */
+  setTuning(tuning) {
+    const count = tuning === '5' ? 5 : 4;
+    if (count !== this.stringCount) {
+      this.stringCount = count;
+      this.render();
+    }
   }
 
   render() {
@@ -58,8 +71,8 @@ export class FretboardUI {
         fretCol.appendChild(dotBtm);
       }
 
-      // 4本の弦と交差するセル (上から1弦G, 2弦D, 3弦A, 4弦E)
-      for (let s = 1; s <= 4; s++) {
+      // 弦と交差するセル (上から1弦G, 2弦D, 3弦A, 4弦E / 5弦時は最下行に5弦B)
+      for (let s = 1; s <= this.stringCount; s++) {
         const cell = document.createElement('div');
         cell.className = `fret-cell string-${s}`;
         cell.setAttribute('data-string', s);
