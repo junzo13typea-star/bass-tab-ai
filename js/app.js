@@ -259,6 +259,7 @@ class BassTabApp {
       <button id="btnResetBpm" type="button" aria-label="推定したBPMに戻す" style="${BTN}">推定に戻す</button>
       <button id="btnReanalyze" type="button" aria-label="再解析" style="${BTN}">🔁 再解析</button>
       <button id="btnExportTab" type="button" aria-label="TAB書き出し" style="${BTN}">📄 TAB書き出し</button>
+      <button id="btnExportMidi" type="button" aria-label="MIDI書き出し" style="${BTN}">🎹 MIDI書き出し</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
       <button id="btnHelp" type="button" aria-label="使い方を表示" style="${BTN}">❓ 使い方</button>
       <span id="stretchBadge" role="status" style="display:none; font-size:12px; padding:4px 8px; border-radius:999px; background:rgba(56,189,248,0.12); border:1px solid rgba(56,189,248,0.6); color:#7dd3fc;">ピッチ保持を準備中…</span>
@@ -331,6 +332,9 @@ class BassTabApp {
     });
     bar.querySelector('#btnExportTab').addEventListener('click', () => {
       this.exportTextTab();
+    });
+    bar.querySelector('#btnExportMidi').addEventListener('click', () => {
+      this.exportMidi();
     });
     this.domExtra.autoScrollBtn.addEventListener('click', () => {
       this.setAutoScrollUI(!this.autoScroll);
@@ -821,6 +825,72 @@ class BassTabApp {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     this.showToast('📄 テキストTABをダウンロードしました');
+  }
+
+  /**
+   * 現在のTABを Standard MIDI File (format 0) として書き出す。
+   * DAW やスコアソフトにそのまま渡せる。テンポは現在のBPMで埋め込む。
+   */
+  exportMidi() {
+    if (!this.currentTabNotes || this.currentTabNotes.length === 0) {
+      this.showToast('書き出すTABがありません');
+      return;
+    }
+    const bpm = (this.currentTempo && this.currentTempo.bpm) || 120;
+    const bytes = BassTabApp.buildMidiBytes(this.currentTabNotes, bpm, this.currentTrackTitle || 'BassTab');
+    const blob = new Blob([bytes], { type: 'audio/midi' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safeName = (this.currentTrackTitle || 'basstab').replace(/[^\w\- ]+/g, '').trim() || 'basstab';
+    a.href = url;
+    a.download = `${safeName}.mid`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    this.showToast('🎹 MIDIファイルをダウンロードしました');
+  }
+
+  static buildMidiBytes(notes, bpm, title) {
+    const PPQ = 480;
+    const secPerTick = (60 / bpm) / PPQ;
+    const vlq = (v) => {
+      const buf = [v & 0x7f];
+      v >>= 7;
+      while (v > 0) { buf.unshift((v & 0x7f) | 0x80); v >>= 7; }
+      return buf;
+    };
+    const events = []; // { tick, prio, bytes }
+    const mpq = Math.round(60000000 / bpm);
+    events.push({ tick: 0, prio: 0, bytes: [0xff, 0x51, 0x03, (mpq >> 16) & 0xff, (mpq >> 8) & 0xff, mpq & 0xff] });
+    const nameBytes = Array.from(new TextEncoder().encode(String(title).slice(0, 60)));
+    events.push({ tick: 0, prio: 0, bytes: [0xff, 0x03, nameBytes.length, ...nameBytes] });
+    for (const n of notes) {
+      if (typeof n.midi !== 'number') continue;
+      const on = Math.max(0, Math.round(n.time / secPerTick));
+      const off = Math.max(on + 1, Math.round((n.time + Math.max(n.duration || 0.1, 0.03)) / secPerTick));
+      const vel = Math.min(127, Math.max(1, Math.round((n.velocity || 0.8) * 127)));
+      events.push({ tick: on, prio: 2, bytes: [0x90, n.midi & 0x7f, vel] });
+      events.push({ tick: off, prio: 1, bytes: [0x80, n.midi & 0x7f, 0] });
+    }
+    events.sort((a, b) => a.tick - b.tick || a.prio - b.prio);
+    const track = [];
+    let last = 0;
+    for (const e of events) {
+      track.push(...vlq(e.tick - last), ...e.bytes);
+      last = e.tick;
+    }
+    track.push(0x00, 0xff, 0x2f, 0x00);
+    const header = [
+      0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, // MThd
+      0, 0, 0, 1, // format 0, 1 track
+      (PPQ >> 8) & 0xff, PPQ & 0xff
+    ];
+    const trackHeader = [
+      0x4d, 0x54, 0x72, 0x6b,
+      (track.length >>> 24) & 0xff, (track.length >>> 16) & 0xff, (track.length >>> 8) & 0xff, track.length & 0xff
+    ];
+    return new Uint8Array([...header, ...trackHeader, ...track]);
   }
 
   /**

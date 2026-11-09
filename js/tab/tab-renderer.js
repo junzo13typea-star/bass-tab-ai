@@ -260,6 +260,7 @@ export class TabRenderer {
   }
 
   render() {
+    this._sawLowConf = false;
     const dpr = window.devicePixelRatio || 1;
     const width = this.canvas.width / dpr;
     const height = this.totalHeight;
@@ -431,6 +432,9 @@ export class TabRenderer {
       const noteY = this.staffTop + (displayString - 1) * this.lineSpacing;
       const isCurrentlyPlaying = (this.currentTime >= note.time && this.currentTime <= note.time + note.duration);
       const isSelected = (i === this.selectedNoteIndex);
+      // 信頼度が低めの音 (音程判定の確信度が低い＝混入・誤判定の疑い) は琥珀色で示す
+      const lowConf = typeof note.confidence === 'number' && note.confidence < 0.8;
+      if (lowConf) this._sawLowConf = true;
 
       // フレット番号の背景円 (弦の線を隠して数字を読みやすく)
       ctx.fillStyle = isCurrentlyPlaying ? '#0284c7' : '#0f172a';
@@ -439,8 +443,8 @@ export class TabRenderer {
       ctx.fill();
 
       // フレット円の枠線 (選択中は白リング＋シアンのグローで基調色に統一して明示)
-      ctx.strokeStyle = isSelected ? '#ffffff' : (isCurrentlyPlaying ? '#38bdf8' : 'rgba(56, 189, 248, 0.5)');
-      ctx.lineWidth = isSelected ? 3.5 : (isCurrentlyPlaying ? 2.5 : 1.5);
+      ctx.strokeStyle = isSelected ? '#ffffff' : (isCurrentlyPlaying ? '#38bdf8' : (lowConf ? '#f59e0b' : 'rgba(56, 189, 248, 0.5)'));
+      ctx.lineWidth = isSelected ? 3.5 : (isCurrentlyPlaying ? 2.5 : (lowConf ? 2.5 : 1.5));
       if (isCurrentlyPlaying || isSelected) {
         ctx.shadowColor = '#38bdf8';
         ctx.shadowBlur = 10;
@@ -449,7 +453,7 @@ export class TabRenderer {
       ctx.shadowBlur = 0;
 
       // フレット番号テキスト
-      ctx.fillStyle = isCurrentlyPlaying ? '#ffffff' : '#f1f5f9';
+      ctx.fillStyle = isCurrentlyPlaying ? '#ffffff' : (lowConf ? '#fbbf24' : '#f1f5f9');
       ctx.font = 'bold 12px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -477,6 +481,15 @@ export class TabRenderer {
           ctx.fillText(note.noteName, noteX, noteY - 14);
         }
       }
+    }
+
+    // 信頼度が低めの音がある場合のみ凡例を出す
+    if (this._sawLowConf) {
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText('● 琥珀色の音符は信頼度が低めです（誤判定の可能性。クリックで確認・修正できます）', this.leftPadding, this.totalHeight - 8);
     }
   }
 }

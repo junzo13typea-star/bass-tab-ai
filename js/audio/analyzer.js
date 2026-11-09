@@ -200,6 +200,12 @@ export class AudioAnalyzer {
         currentNote.midi = s[Math.floor(s.length / 2)];
       }
       delete currentNote._samples;
+      // 信頼度: フレーム clarity の平均 (音程の確からしさ)。表示の色分けに使う
+      if (currentNote._clarity && currentNote._clarity.length > 0) {
+        const avg = currentNote._clarity.reduce((a, b) => a + b, 0) / currentNote._clarity.length;
+        currentNote.confidence = Math.round(Math.min(1, Math.max(0, avg)) * 100) / 100;
+      }
+      delete currentNote._clarity;
       notes.push(currentNote);
       currentNote = null;
     };
@@ -228,12 +234,14 @@ export class AudioAnalyzer {
               midi: midi,
               freq: f.freq,
               velocity: Math.min(1.0, Math.max(0.3, f.rms / (maxRms * 0.8))),
-              _samples: [midi]
+              _samples: [midi],
+              _clarity: [f.clarity]
             };
           } else {
             // ノート継続中
             currentNote.duration = f.time - currentNote.time;
             currentNote._samples.push(midi);
+            currentNote._clarity.push(f.clarity);
           }
         }
       } else {
