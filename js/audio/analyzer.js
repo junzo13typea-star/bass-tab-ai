@@ -707,6 +707,9 @@ export class AudioAnalyzer {
       const kStart = Math.round((n.time - offset) / step);
       const kEnd = Math.round((n.time + n.duration - offset) / step);
       if (kEnd - kStart < 2) { out.push(n); continue; }
+      // 信頼度が低いノートは分割しない: フルミックスでは他楽器の漏れでできた
+      // 低信頼ノートまで分割すると音数が過剰になる (実ファイル検証で調整)
+      if (typeof n.confidence === 'number' && n.confidence < 0.7) { out.push(n); continue; }
       const onsetFlux = Math.max(fluxNear(n.time), 1e-6);
       const threshold = Math.max(floor, onsetFlux * 0.5);
       let segStart = n.time;
