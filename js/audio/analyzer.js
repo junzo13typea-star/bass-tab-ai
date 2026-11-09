@@ -177,45 +177,68 @@ export class AudioAnalyzer {
     for (const f of frameAnalysis) if (f.rms > maxRms) maxRms = f.rms;
     const noiseThreshold = Math.max(sensConfig.floor, maxRms * sensConfig.noiseMul);
 
+    // 音程トラックの平滑化: フレーム音程 (MIDI値) に3点中央値フィルタをかけ、
+    // 1フレームだけのブレ (他楽器のトランジェント等) でノートが細切れになるのを防ぐ
+    const rawMidis = frameAnalysis.map(f => (f.freq > 0 ? this.freqToMidi(f.freq) : null));
+    const smoothMidis = rawMidis.map((m, i) => {
+      const vals = [];
+      for (let d = -1; d <= 1; d++) {
+        const v = rawMidis[i + d];
+        if (v !== null && v !== undefined) vals.push(v);
+      }
+      if (vals.length === 0) return null;
+      vals.sort((a, b) => a - b);
+      return vals[Math.floor(vals.length / 2)];
+    });
+
+    // ノート確定ヘルパー: 区間内の音程サンプルの中央値をそのノートの音程とする
+    const finalizeNote = (endTime) => {
+      if (!currentNote) return;
+      currentNote.duration = Math.max(minNoteDuration, endTime - currentNote.time);
+      if (currentNote._samples && currentNote._samples.length > 0) {
+        const s = [...currentNote._samples].sort((a, b) => a - b);
+        currentNote.midi = s[Math.floor(s.length / 2)];
+      }
+      delete currentNote._samples;
+      notes.push(currentNote);
+      currentNote = null;
+    };
+
     for (let i = 0; i < frameAnalysis.length; i++) {
       const f = frameAnalysis[i];
       const prev = i > 0 ? frameAnalysis[i - 1] : { rms: 0, freq: 0 };
+      const sm = smoothMidis[i];
 
       // 急峻なエネルギー上昇 (アタックトランジェント) または 音程の明瞭な変化
       const isAttack = (f.rms > noiseThreshold) && (f.rms > prev.rms * 1.55);
-      const isPitchChange = currentNote && f.freq > 0 && Math.abs(this.freqToMidi(f.freq) - currentNote.midi) >= 0.8;
+      const isPitchChange = currentNote && sm !== null && Math.abs(sm - currentNote.midi) >= 0.8;
 
-      if (f.rms > noiseThreshold && f.freq >= minFreq && f.freq <= 400 && f.clarity > sensConfig.clarity) {
-        const midi = Math.round(this.freqToMidi(f.freq));
+      if (f.rms > noiseThreshold && f.freq >= minFreq && f.freq <= 400 && f.clarity > sensConfig.clarity && sm !== null) {
+        const midi = Math.round(sm);
 
         // ベースの音域 (下限はチューニング依存: 4弦 E1=28 / 5弦 B0=23 〜 G4=67) に制約
         if (midi >= minMidi && midi <= 67) {
           if (!currentNote || isAttack || isPitchChange) {
             // 前のノートを確定
-            if (currentNote) {
-              currentNote.duration = Math.max(minNoteDuration, f.time - currentNote.time);
-              notes.push(currentNote);
-            }
+            finalizeNote(f.time);
             // 新しいノート開始
             currentNote = {
               time: f.time,
               duration: 0.1,
               midi: midi,
               freq: f.freq,
-              velocity: Math.min(1.0, Math.max(0.3, f.rms / (maxRms * 0.8)))
+              velocity: Math.min(1.0, Math.max(0.3, f.rms / (maxRms * 0.8))),
+              _samples: [midi]
             };
           } else {
             // ノート継続中
             currentNote.duration = f.time - currentNote.time;
+            currentNote._samples.push(midi);
           }
         }
       } else {
         // 無音またはノイズ
-        if (currentNote) {
-          currentNote.duration = Math.max(minNoteDuration, f.time - currentNote.time);
-          notes.push(currentNote);
-          currentNote = null;
-        }
+        finalizeNote(f.time);
       }
 
       if (onProgress && i % 200 === 0) {
@@ -229,7 +252,7 @@ export class AudioAnalyzer {
     }
 
     if (currentNote) {
-      notes.push(currentNote);
+      finalizeNote(frameAnalysis.length > 0 ? frameAnalysis[frameAnalysis.length - 1].time + 0.02 : currentNote.time + 0.1);
     }
 
     // 3. 後処理: 短すぎるノイズの除去とタイミングの微調整
@@ -317,9 +340,22 @@ export class AudioAnalyzer {
 
   cleanAndQuantizeNotes(rawNotes) {
     if (!rawNotes || rawNotes.length === 0) return [];
-    
+
     // 短すぎるゴミ（30ms以下）の除去
-    const filtered = rawNotes.filter(n => n.duration >= 0.06);
+    const filtered = rawNotes.filter(n => n.duration >= 0.06).map(n => ({ ...n }));
+
+    // 短い逸脱の吸収: 両隣が同じ音程で、挟まれた短い音がオクターブ違い (±12) か
+    // ごく短い (<90ms) 場合は、検出のブレとみなして両隣の音程に寄せる (後段で結合される)
+    for (let i = 1; i < filtered.length - 1; i++) {
+      const prev = filtered[i - 1];
+      const cur = filtered[i];
+      const next = filtered[i + 1];
+      if (prev.midi === next.midi && cur.midi !== prev.midi && cur.duration < 0.13) {
+        if (Math.abs(cur.midi - prev.midi) === 12 || cur.duration < 0.09) {
+          cur.midi = prev.midi;
+        }
+      }
+    }
 
     // 近接した同一音の結合 (レガート・サステインの補正)
     const merged = [];
@@ -636,22 +672,91 @@ export class AudioAnalyzer {
   /**
    * 検出ノートを16分音符グリッドへ量子化する (最も近いグリッド位置へ吸着)
    */
+  /**
+   * 同音連打の分割: 1音として検出された持続音の中に埋もれた再アタックを、
+   * オンセット曲線 (flux) のピークがあるグリッド境界で切り分ける。
+   * 分離ステムやベース単体音源など滑らかな音源で、ピック連打が
+   * 長い1音に潰れてしまう問題への対策。flux が無い場合は何もしない。
+   */
+  splitSustainedNotes(notes, step, offset) {
+    const curve = this._onsetCurve;
+    if (!curve || !curve.flux || curve.flux.length < 50) return notes;
+    const { hopSec, flux } = curve;
+    const sorted = Float32Array.from(flux).sort();
+    const p50 = sorted[Math.floor(sorted.length * 0.5)];
+    const p90 = sorted[Math.floor(sorted.length * 0.9)];
+    const floor = p50 + (p90 - p50) * 0.45;
+    const fluxNear = (t) => {
+      const c = Math.round(t / hopSec);
+      let m = 0;
+      for (let i = c - 1; i <= c + 1; i++) {
+        if (i >= 0 && i < flux.length && flux[i] > m) m = flux[i];
+      }
+      return m;
+    };
+    const out = [];
+    for (const n of notes) {
+      const kStart = Math.round((n.time - offset) / step);
+      const kEnd = Math.round((n.time + n.duration - offset) / step);
+      if (kEnd - kStart < 2) { out.push(n); continue; }
+      const onsetFlux = Math.max(fluxNear(n.time), 1e-6);
+      const threshold = Math.max(floor, onsetFlux * 0.5);
+      let segStart = n.time;
+      for (let k = kStart + 1; k < kEnd; k++) {
+        const tb = offset + k * step;
+        if (tb - segStart < step * 0.8) continue;
+        if (fluxNear(tb) >= threshold) {
+          out.push({ ...n, time: segStart, duration: tb - segStart });
+          segStart = tb;
+        }
+      }
+      out.push({ ...n, time: segStart, duration: (n.time + n.duration) - segStart });
+    }
+    return out;
+  }
+
   quantizeNotes(notes, bpm, offset = 0) {
     if (!notes || notes.length === 0 || !bpm) return notes;
     const step = (60 / bpm) / 4; // 16分音符の長さ
-    const snapped = notes.map(n => {
+    const split = this.splitSustainedNotes(notes, step, offset);
+    const snapped = split.map(n => {
       const k = Math.round((n.time - offset) / step);
-      return { ...n, time: offset + k * step };
+      return { ...n, time: offset + k * step, _slot: k };
     });
+    // 単音化: ベースは単音楽器なので、同じ16分スロットに複数の音が吸着した場合は
+    // 1音だけ残す (フルミックス等で他楽器の音が同じ位置に重なる対策)。
+    // 優先度は ベロシティ + 長さ、前音からの音程の近さでタイブレーク。
+    snapped.sort((a, b) => a._slot - b._slot || a.time - b.time);
+    const mono = [];
+    let prevMidi = null;
+    for (let i = 0; i < snapped.length;) {
+      let j = i;
+      const group = [];
+      while (j < snapped.length && snapped[j]._slot === snapped[i]._slot) {
+        group.push(snapped[j]);
+        j++;
+      }
+      let best = group[0];
+      let bestScore = -Infinity;
+      for (const n of group) {
+        let s = (n.velocity || 0.5) + Math.min(n.duration || 0.1, 0.3);
+        if (prevMidi !== null) s -= Math.abs(n.midi - prevMidi) * 0.01;
+        if (s > bestScore) { bestScore = s; best = n; }
+      }
+      delete best._slot;
+      mono.push(best);
+      prevMidi = best.midi;
+      i = j;
+    }
     // 次の音と重ならないよう長さを整える
-    for (let i = 0; i < snapped.length; i++) {
-      const cur = snapped[i];
-      const next = snapped[i + 1];
+    for (let i = 0; i < mono.length; i++) {
+      const cur = mono[i];
+      const next = mono[i + 1];
       let end = cur.time + cur.duration;
       if (next && end > next.time) end = next.time;
       cur.duration = Math.max(0.06, end - cur.time);
     }
-    return snapped;
+    return mono;
   }
 }
 

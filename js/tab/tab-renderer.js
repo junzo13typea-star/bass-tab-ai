@@ -467,10 +467,15 @@ export class TabRenderer {
       }
 
       // 音名表示 (音符の上に小さく "A1", "D2" 等)
+      // 全音符に出すと密集して読みにくいため、音程が変わった音符と選択中の音符だけに絞る
       if (note.noteName) {
-        ctx.fillStyle = '#94a3b8';
-        ctx.font = '10px monospace';
-        ctx.fillText(note.noteName, noteX, noteY - 14);
+        const prevNote = i > 0 ? this.tabNotes[i - 1] : null;
+        const pitchChanged = !prevNote || prevNote.midi !== note.midi;
+        if (pitchChanged || isSelected) {
+          ctx.fillStyle = isSelected ? '#e0f2fe' : '#94a3b8';
+          ctx.font = '10px monospace';
+          ctx.fillText(note.noteName, noteX, noteY - 14);
+        }
       }
     }
   }

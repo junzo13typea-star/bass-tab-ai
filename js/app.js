@@ -37,6 +37,8 @@ class BassTabApp {
     this.lastFile = null;         // 再解析用に保持する最後のアップロードファイル
     this.isGeneratedTab = false;  // 解析で生成したTABかどうか (自動保存の対象)
     this.domExtra = null;         // 動的追加コントロールへの参照
+    this.currentRawNotes = null;  // 再量子化用に保持する検出直後のノート列
+    this.estimatedTempo = null;   // 自動推定したテンポ (手動BPMを「推定に戻す」用)
 
     // UI改善で追加した状態
     this.autoScroll = true;       // 譜面の自動スクロール追従
@@ -228,7 +230,7 @@ class BassTabApp {
     wrap.style.cssText = 'margin: 6px 0;';
 
     const bar = document.createElement('div');
-    bar.style.cssText = 'display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:6px 2px; font-size:13px;';
+    bar.style.cssText = 'display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; padding:10px 12px; font-size:13px; background:#ffffff; border:1px solid #e2e8f0; border-radius:12px; box-shadow:0 1px 3px rgba(15,23,42,0.06);';
     bar.innerHTML = `
       <label>拍子
         <select id="ctlTimeSignature" aria-label="拍子" style="${SEL}">
@@ -250,6 +252,11 @@ class BassTabApp {
           <option value="high">高</option>
         </select>
       </label>
+      <label>BPM
+        <input id="ctlBpm" type="number" min="40" max="280" step="0.1" aria-label="BPMを手動で指定" style="${SEL} width:76px; cursor:text;">
+      </label>
+      <button id="btnApplyBpm" type="button" aria-label="指定したBPMで再配置" style="${BTN}">BPM適用</button>
+      <button id="btnResetBpm" type="button" aria-label="推定したBPMに戻す" style="${BTN}">推定に戻す</button>
       <button id="btnReanalyze" type="button" aria-label="再解析" style="${BTN}">🔁 再解析</button>
       <button id="btnExportTab" type="button" aria-label="TAB書き出し" style="${BTN}">📄 TAB書き出し</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
@@ -277,9 +284,24 @@ class BassTabApp {
       tuningSelect: bar.querySelector('#ctlTuning'),
       sensSelect: bar.querySelector('#ctlSensitivity'),
       autoScrollBtn: bar.querySelector('#btnAutoScroll'),
+      bpmInput: bar.querySelector('#ctlBpm'),
       editBar,
       editNoteInfo: editBar.querySelector('#editNoteInfo')
     };
+    bar.querySelector('#btnApplyBpm').addEventListener('click', () => {
+      const v = parseFloat(this.domExtra.bpmInput.value);
+      this.applyManualBpm(v, false);
+    });
+    bar.querySelector('#btnResetBpm').addEventListener('click', () => {
+      if (this.estimatedTempo) this.applyManualBpm(this.estimatedTempo.bpm, true);
+      else this.showToast('推定したBPMがまだありません');
+    });
+    this.domExtra.bpmInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const v = parseFloat(this.domExtra.bpmInput.value);
+        this.applyManualBpm(v, false);
+      }
+    });
     this.domStretchBadge = bar.querySelector('#stretchBadge');
 
     // ピッチ保持ストレッチの生成状態をバッジに反映する
@@ -838,6 +860,9 @@ class BassTabApp {
     this.currentAudioBuffer = null;
     this.currentTabNotes = payload.notes;
     this.currentTempo = payload.tempo || null;
+    this.currentRawNotes = null;
+    this.estimatedTempo = payload.tempo || null;
+    if (this.domExtra && this.domExtra.bpmInput && payload.tempo) this.domExtra.bpmInput.value = payload.tempo.bpm;
     this.isGeneratedTab = true;
 
     if (payload.tuning) {
@@ -876,6 +901,9 @@ class BassTabApp {
     // プリセット定義そのものを書き換えないようコピーを保持する (音符編集のため)
     this.currentTabNotes = preset.notes.map(n => ({ ...n }));
     this.currentTempo = { bpm: preset.bpm, offset: 0 };
+    this.currentRawNotes = null;
+    this.estimatedTempo = null;
+    if (this.domExtra && this.domExtra.bpmInput) this.domExtra.bpmInput.value = preset.bpm;
     this.isGeneratedTab = false;
 
     // トラック情報表示更新
@@ -922,6 +950,9 @@ class BassTabApp {
       const tempo = this.analyzer.estimateTempo(rawNotes);
       const quantizedNotes = this.analyzer.quantizeNotes(rawNotes, tempo.bpm, tempo.offset);
       this.currentTempo = tempo;
+      this.currentRawNotes = rawNotes;
+      this.estimatedTempo = tempo;
+      if (this.domExtra && this.domExtra.bpmInput) this.domExtra.bpmInput.value = tempo.bpm;
 
       // 5. 最適運指決定 (4弦TAB譜化)
       this.controls.showProgress(0.88, '最適なベース運指ポジションを計算中...');
@@ -982,6 +1013,34 @@ class BassTabApp {
         '対応形式は MP3 / WAV などの一般的な音声ファイルです。ファイルが破損していないか、別のファイルでもお試しください。'
       ]);
     }
+  }
+
+  /**
+   * BPMの手動上書き: 推定が外れたときに、検出済みノートを保ったまま
+   * 指定BPMで再量子化して譜面を作り直す (再解析は不要)
+   */
+  applyManualBpm(bpm, isReset) {
+    if (!this.currentRawNotes || this.currentRawNotes.length === 0) {
+      this.showToast('先に音声ファイルを解析してください（保存済みTABの復元時は再配置できません）');
+      return;
+    }
+    if (!isFinite(bpm) || bpm < 40 || bpm > 280) {
+      this.showToast('BPMは 40〜280 の範囲で指定してください');
+      return;
+    }
+    const offset = (this.currentTempo && this.currentTempo.offset) || 0;
+    const quantizedNotes = this.analyzer.quantizeNotes(this.currentRawNotes, bpm, offset);
+    const tabNotes = this.mapper.mapNotesToTab(quantizedNotes);
+    this.currentTabNotes = tabNotes;
+    this.currentTempo = { bpm, offset };
+    if (this.domExtra && this.domExtra.bpmInput) this.domExtra.bpmInput.value = bpm;
+    const duration = this.currentAudioBuffer ? this.currentAudioBuffer.duration : 0;
+    if (this.currentAudioBuffer) this.player.loadTrack(this.currentAudioBuffer, tabNotes);
+    this.tabRenderer.setTabNotes(tabNotes, duration, bpm, offset);
+    if (this.isGeneratedTab) this.saveGeneratedTab();
+    this.updateTrackInfo(this.currentTrackTitle,
+      `AI自動採譜 • ${tabNotes.length}音符検出 • BPM ${Math.round(bpm * 10) / 10}${isReset ? ' (推定)' : ' (手動)'} • 長さ ${this.controls.formatTime(duration)}`);
+    this.showToast(isReset ? `推定BPM ${Math.round(bpm * 10) / 10} に戻しました` : `BPMを ${Math.round(bpm * 10) / 10} に変更しました`);
   }
 
   updateTrackInfo(title, meta) {
