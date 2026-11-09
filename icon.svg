@@ -46,7 +46,7 @@
     <text x="220" y="246" fill="#60a5fa" font-family="monospace" font-size="18" font-weight="900" text-anchor="middle">5</text>
 
     <circle cx="290" cy="180" r="18" fill="#0f172a" stroke="#8b5cf6" stroke-width="4" filter="url(#glow)"/>
-    <text x="290" y="246" fill="#a78bfa" font-family="monospace" font-size="18" font-weight="900" text-anchor="middle" y="186">5</text>
+    <text x="290" y="186" fill="#a78bfa" font-family="monospace" font-size="18" font-weight="900" text-anchor="middle">5</text>
 
     <circle cx="350" cy="120" r="18" fill="#0f172a" stroke="#ec4899" stroke-width="4" filter="url(#glow)"/>
     <text x="350" y="126" fill="#f472b6" font-family="monospace" font-size="18" font-weight="900" text-anchor="middle">7</text>
