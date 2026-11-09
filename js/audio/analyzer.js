@@ -120,6 +120,11 @@ export class AudioAnalyzer {
     // 1. 各フレームの RMS エネルギーと YIN ピッチを算出
     const frameAnalysis = [];
     const yinBuffer = new Float32Array(windowSize / 2);
+    // テンポ推定用にオンセット曲線 (RMS の正の変化量) も記録する。
+    // 検出ノート列は他楽器の漏れや細切れ誤検出で汚染されやすいが、
+    // 信号レベルの周期性は実テンポをよく保つため、estimateTempo が優先的に使う。
+    const onsetFlux = [];
+    let prevRms = 0;
 
     for (let i = 0; i < totalHops; i++) {
       const offset = i * hopSize;
@@ -147,6 +152,8 @@ export class AudioAnalyzer {
         freq,
         clarity
       });
+      onsetFlux.push(Math.max(0, rms - prevRms));
+      prevRms = rms;
 
       if (onProgress && i % 100 === 0) {
         onProgress(0.1 + (i / totalHops) * 0.6);
@@ -157,6 +164,8 @@ export class AudioAnalyzer {
         await new Promise(r => setTimeout(r, 0));
       }
     }
+
+    this._onsetCurve = { hopSec: hopSize / sampleRate, flux: Float32Array.from(onsetFlux) };
 
     // 2. オンセット（発音点）の検出とノートグルーピング
     const notes = [];
@@ -386,62 +395,146 @@ export class AudioAnalyzer {
     }
     if (wsum > 0) beatLen = vsum / wsum;
 
-    // 位相の初期推定: オンセットの (time mod beatLen) の最頻ビン中心を拍位置とする
-    const bins = 20;
-    const phaseVotes = new Array(bins).fill(0);
-    for (const n of notes) {
-      const phase = ((n.time % beatLen) + beatLen) % beatLen;
-      phaseVotes[Math.floor(phase / beatLen * bins) % bins]++;
-    }
-    let bestBin = 0;
-    for (let i = 0; i < bins; i++) {
-      if (phaseVotes[i] > phaseVotes[bestBin]) bestBin = i;
-    }
-    let offset = ((bestBin + 0.5) / bins) * beatLen;
-
-    // 精密化 (1): テンポ候補を走査し、8分グリッドへの当てはまりが最良の beatLen を選ぶ。
-    // 投票だけでは端数BPM (例: 188) で1〜2%外れ、曲の後半ほどグリッドがずれる (drift)。
-    // ラベル付けに依存しないスコア方式なので、初期誤差が大きくても正しい周期へ収束する。
-    {
-      // 候補グリッドに対する位相 (円周統計) と整合スコア
-      const gridFit = (candBeatLen) => {
-        const step8 = candBeatLen / 2;
-        let cosSum = 0, sinSum = 0;
-        for (const n of notes) {
-          const th = 2 * Math.PI * (n.time / step8);
-          cosSum += Math.cos(th);
-          sinSum += Math.sin(th);
-        }
-        let phase = Math.atan2(sinSum, cosSum) / (2 * Math.PI) * step8;
-        if (phase < 0) phase += step8;
-        const sigma = step8 * 0.25;
-        let score = 0;
-        for (const n of notes) {
-          const d = Math.abs(n.time - (phase + Math.round((n.time - phase) / step8) * step8));
-          score += Math.exp(-(d * d) / (2 * sigma * sigma));
-        }
-        return { phase, score };
-      };
-
-      let bestBeatLen = beatLen;
-      let bestFit = gridFit(beatLen);
-      const CANDIDATES = 160;
-      for (let i = 0; i <= CANDIDATES; i++) {
-        const cand = beatLen * (0.965 + (0.07 * i) / CANDIDATES);
-        if (Math.abs(cand - beatLen) < 1e-9) continue;
-        const fit = gridFit(cand);
-        if (fit.score > bestFit.score) { bestFit = fit; bestBeatLen = cand; }
+    // ---- 信号レベルのテンポ推定 (オンセット曲線がある場合はこちらを優先) ----
+    // フルミックス等の実音源では検出ノート列が他楽器の漏れ・細切れ誤検出で汚染され、
+    // ノート間隔の投票やグリッド当てはめが実テンポを外すことがある (密度の飽和)。
+    // 解析時に記録したオンセット曲線 (RMS フラックス) の周期性を直接測る方が堅牢なため、
+    // コム (櫛) スコアで周期を走査し、ノート投票の勝者ともスコアで競わせて採用する。
+    if (this._onsetCurve && this._onsetCurve.flux.length >= 200) {
+      const { hopSec, flux } = this._onsetCurve;
+      const sortedFlux = [...flux].sort((a, b) => b - a);
+      const fluxThr = sortedFlux[Math.floor(sortedFlux.length * 0.35)];
+      const events = [];
+      for (let i = 0; i < flux.length; i++) {
+        if (flux[i] > fluxThr) events.push({ t: i * hopSec, w: flux[i] });
       }
-      beatLen = bestBeatLen;
-      offset = bestFit.phase; // 8分位相 (拍位相は後段で決める)
+      if (events.length >= 40) {
+        // 周期 P の8分グリッドへの重み付き整合スコアと位相 (円周統計)。
+        // 拍グリッドで測ると均一な8分主体の曲で8分周期そのものが勝ってしまうため、
+        // 候補周期の「8分グリッド」で整合を測り、オクターブの決着は投票側の prior に委ねる。
+        const combFit = (P) => {
+          const step8 = P / 2;
+          let cs = 0, sn = 0, wsum2 = 0;
+          for (const e of events) {
+            const th = 2 * Math.PI * (e.t / step8);
+            cs += e.w * Math.cos(th);
+            sn += e.w * Math.sin(th);
+            wsum2 += e.w;
+          }
+          let phase = Math.atan2(sn, cs) / (2 * Math.PI) * step8;
+          if (phase < 0) phase += step8;
+          const sigma = 0.018;
+          let s = 0;
+          for (const e of events) {
+            const d = Math.abs(e.t - (phase + Math.round((e.t - phase) / step8) * step8));
+            s += e.w * Math.exp(-(d * d) / (2 * sigma * sigma));
+          }
+          return { phase, score: s / wsum2 };
+        };
+        // 候補: コム走査の上位ピーク + ノート投票の勝者
+        const scanScores = [];
+        for (let P = 0.28; P <= 1.10; P += 0.002) scanScores.push({ P, ...combFit(P) });
+        const peakIdx = [];
+        for (let i = 1; i < scanScores.length - 1; i++) {
+          if (scanScores[i].score >= scanScores[i - 1].score && scanScores[i].score >= scanScores[i + 1].score) {
+            peakIdx.push(i);
+          }
+        }
+        peakIdx.sort((a, b) => scanScores[b].score - scanScores[a].score);
+        const combCandidates = [];
+        for (const i of peakIdx) {
+          if (combCandidates.every(c => Math.abs(c.P - scanScores[i].P) > 0.03)) {
+            combCandidates.push({ P: scanScores[i].P, score: scanScores[i].score, phase: scanScores[i].phase });
+          }
+          if (combCandidates.length >= 4) break;
+        }
+        const noteWinnerLen = beatLen;
+        combCandidates.push({ P: beatLen, ...combFit(beatLen), isNoteWinner: true });
+        // 各候補を局所走査で精密化
+        for (const c of combCandidates) {
+          let bestP = c.P, bestFit = { score: c.score, phase: c.phase };
+          for (let P = c.P * 0.97; P <= c.P * 1.03; P += 0.0005) {
+            const f = combFit(P);
+            if (f.score > bestFit.score) { bestFit = f; bestP = P; }
+          }
+          c.P = bestP; c.score = bestFit.score; c.phase = bestFit.phase;
+        }
+        combCandidates.sort((a, b) => b.score - a.score);
+        const bestScore = combCandidates[0].score;
+        // 採用規則: スコアが最良の92%以内にある候補を「合格」とし、
+        // ノート投票の勝者 (倍テンポ補正などの音楽的 prior を含む) が合格内ならそれを優先。
+        // 合格内に投票勝者が無い場合 (実音源で投票が外れた場合) はコムスコア最良を採用し、
+        // スコアが互角 (98%以上) なら遅い周期 (長周期側) を優先する。
+        const eligible = combCandidates.filter(c => c.score >= bestScore * 0.92);
+        let chosen = eligible.find(c => c.isNoteWinner);
+        if (!chosen) {
+          chosen = eligible[0];
+          for (const c of eligible) {
+            if (c.score >= chosen.score * 0.98 && c.P > chosen.P) chosen = c;
+          }
+        }
+        beatLen = chosen.P;
+        let offset = chosen.phase;
+        // 半拍ずれの仲裁: 拍位置に乗るノートのベロシティ合計が大きい方を拍頭にする
+        const step8 = beatLen / 2;
+        const beatVel = (phase) => {
+          let s = 0;
+          for (const n of notes) {
+            const d = Math.abs(n.time - (phase + Math.round((n.time - phase) / beatLen) * beatLen));
+            if (d < beatLen * 0.12) s += (n.velocity || 0.7);
+          }
+          return s;
+        };
+        if (beatVel(offset + step8) > beatVel(offset) * 1.15) offset += step8;
+        const bpm = Math.round((60 / beatLen) * 10) / 10;
+        return { bpm, offset };
+      }
+    }
 
-      // 精密化 (2): 走査で得た周期を初期値に、最小二乗フィットで仕上げる
-      let step8 = beatLen / 2;
+    // ---- 候補テンポの精密化と選択 ----
+    // 実音源 (特にフルミックス) では検出ノートに他楽器の漏れや細切れの誤検出が混ざり、
+    // IOI投票の最大ピークが正しい周期にならないことがある (例: 188BPMの曲で150BPMを掴む)。
+    // そこで投票の上位ピークを複数候補として保持し、それぞれを実グリッドへ精密化したうえで
+    // 「16分グリッドの40ms以内に収まる音の割合」が最大の候補を採用する。
+    // 適合率が互角の候補 (オクターブ関係など) は投票支持の高い方を優先する。
+
+    // 候補グリッドに対する位相 (円周統計) と整合スコア
+    const gridFit = (candBeatLen) => {
+      const step8 = candBeatLen / 2;
+      let cosSum = 0, sinSum = 0;
+      for (const n of notes) {
+        const th = 2 * Math.PI * (n.time / step8);
+        cosSum += Math.cos(th);
+        sinSum += Math.sin(th);
+      }
+      let phase = Math.atan2(sinSum, cosSum) / (2 * Math.PI) * step8;
+      if (phase < 0) phase += step8;
+      const sigma = step8 * 0.25;
+      let score = 0;
+      for (const n of notes) {
+        const d = Math.abs(n.time - (phase + Math.round((n.time - phase) / step8) * step8));
+        score += Math.exp(-(d * d) / (2 * sigma * sigma));
+      }
+      return { phase, score };
+    };
+
+    // 候補を精密化する: 周期±3.5%の走査 + 最小二乗フィット → { beatLen, offset8, frac40 }
+    const refineCandidate = (candBeatLen) => {
+      let bl = candBeatLen;
+      let fit = gridFit(bl);
+      const SCAN = 120;
+      for (let i = 0; i <= SCAN; i++) {
+        const cand = candBeatLen * (0.965 + (0.07 * i) / SCAN);
+        const f = gridFit(cand);
+        if (f.score > fit.score) { fit = f; bl = cand; }
+      }
+      let off8 = fit.phase;
+      let step8 = bl / 2;
       for (let iter = 0; iter < 4; iter++) {
         const pts = [];
         for (const n of notes) {
-          const k = Math.round((n.time - offset) / step8);
-          const resid = n.time - (offset + k * step8);
+          const k = Math.round((n.time - off8) / step8);
+          const resid = n.time - (off8 + k * step8);
           if (Math.abs(resid) <= step8 * 0.32) pts.push([k, n.time]);
         }
         if (pts.length < 8) break;
@@ -452,28 +545,89 @@ export class AudioAnalyzer {
         const b = (pts.length * skt - sk * st) / denom;
         const a = (st - b * sk) / pts.length;
         if (b < 0.12 || b > 0.62) break;
-        const newBeatLen = b * 2;
-        const change = Math.abs(newBeatLen - beatLen);
-        beatLen = newBeatLen;
+        const newBl = b * 2;
+        const change = Math.abs(newBl - bl);
+        bl = newBl;
         step8 = b;
-        offset = ((a % step8) + step8) % step8; // 8分位相として保持
+        off8 = ((a % step8) + step8) % step8;
         if (change < 0.00005) break;
       }
+      const step16 = bl / 4;
+      let within = 0;
+      for (const n of notes) {
+        const d = Math.abs(n.time - (off8 + Math.round((n.time - off8) / step16) * step16));
+        if (d <= 0.040) within++;
+      }
+      return { beatLen: bl, offset8: off8, frac40: within / notes.length };
+    };
 
-      // 拍位相の決定: 8分位相と、それを半拍ずらした候補のうち、
-      // 拍位置に乗る音のベロシティ合計が大きい方を拍の頭とする (8分主体の曲の半拍ずれ対策)
-      const beatScore = (phase) => {
-        let s = 0;
-        for (const n of notes) {
-          const d = Math.abs(n.time - (phase + Math.round((n.time - phase) / beatLen) * beatLen));
-          if (d < beatLen * 0.12) s += (n.velocity || 0.7);
-        }
-        return s;
-      };
-      const phaseA = offset;
-      const phaseB = offset + step8;
-      offset = beatScore(phaseB) > beatScore(phaseA) * 1.15 ? phaseB : phaseA;
+    // 平滑化した投票 (候補の支持度とピーク抽出用)
+    const smoothVotes = new Map();
+    for (const [key, score] of votes) {
+      let s = 0;
+      for (let d = -3; d <= 3; d++) s += (votes.get(key + d) || 0) * (1 - Math.abs(d) / 4);
+      smoothVotes.set(key, s);
     }
+    const voteScoreNear = (targetLen) => {
+      let s = 0;
+      for (const [key, sc] of smoothVotes) {
+        if (Math.abs(key / 200 - targetLen) <= 0.02) s = Math.max(s, sc);
+      }
+      return s;
+    };
+
+    const candidateMap = new Map();
+    const addCandidate = (bl) => {
+      if (bl < 0.28 || bl > 1.10) return;
+      const id = Math.round(bl * 1000);
+      for (const k of candidateMap.keys()) if (Math.abs(k - id) < 15) return;
+      candidateMap.set(id, { beatLen: bl, voteScore: voteScoreNear(bl) });
+    };
+    addCandidate(beatLen); // 従来ロジックの勝者 (倍テンポ補正・平滑化済み)
+    {
+      const sortedPeaks = [...smoothVotes.entries()].sort((a, b) => b[1] - a[1]);
+      const picked = [];
+      for (const [key] of sortedPeaks) {
+        if (picked.every(p => Math.abs(p - key) > 8)) picked.push(key);
+        if (picked.length >= 4) break;
+      }
+      for (const key of picked) {
+        let ws = 0, vs = 0;
+        for (const [k2, sc] of votes) {
+          if (Math.abs(k2 - key) <= 3) { ws += sc; vs += sc * (k2 / 200); }
+        }
+        if (ws > 0) addCandidate(vs / ws);
+      }
+    }
+
+    let results = [...candidateMap.values()].map(c => ({ ...c, ...refineCandidate(c.beatLen) }));
+    const maxFrac = Math.max(...results.map(r => r.frac40));
+    results = results.filter(r => r.frac40 >= maxFrac - 0.03);
+    // オクターブ対策: 適合率が互角の候補同士が約2:1の関係にある場合、
+    // 遅い側に一定の投票支持 (>=35%) があれば速い側 (倍テンポ誤認) を落とす
+    results = results.filter(r => !results.some(o =>
+      o !== r &&
+      Math.abs(o.beatLen - r.beatLen * 2) <= r.beatLen * 0.10 &&
+      o.voteScore >= r.voteScore * 0.35
+    ));
+    results.sort((a, b) => b.voteScore - a.voteScore);
+    beatLen = results[0].beatLen;
+    let offset = results[0].offset8;
+    const step8 = beatLen / 2;
+
+    // 拍位相の決定: 8分位相と、それを半拍ずらした候補のうち、
+    // 拍位置に乗る音のベロシティ合計が大きい方を拍の頭とする (8分主体の曲の半拍ずれ対策)
+    const beatScore = (phase) => {
+      let s = 0;
+      for (const n of notes) {
+        const d = Math.abs(n.time - (phase + Math.round((n.time - phase) / beatLen) * beatLen));
+        if (d < beatLen * 0.12) s += (n.velocity || 0.7);
+      }
+      return s;
+    };
+    const phaseA = offset;
+    const phaseB = offset + step8;
+    offset = beatScore(phaseB) > beatScore(phaseA) * 1.15 ? phaseB : phaseA;
 
     const bpm = Math.round((60 / beatLen) * 10) / 10;
     return { bpm, offset };
