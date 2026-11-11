@@ -260,6 +260,8 @@ class BassTabApp {
       <button id="btnReanalyze" type="button" aria-label="再解析" style="${BTN}">🔁 再解析</button>
       <button id="btnExportTab" type="button" aria-label="TAB書き出し" style="${BTN}">📄 TAB書き出し</button>
       <button id="btnExportMidi" type="button" aria-label="MIDI書き出し" style="${BTN}">🎹 MIDI書き出し</button>
+      <button id="btnExportXml" type="button" aria-label="MusicXML書き出し" style="${BTN}">🎼 MusicXML</button>
+      <button id="btnPrintTab" type="button" aria-label="TABを印刷またはPDF保存" style="${BTN}">🖨 印刷/PDF</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
       <button id="btnHelp" type="button" aria-label="使い方を表示" style="${BTN}">❓ 使い方</button>
       <span id="stretchBadge" role="status" style="display:none; font-size:12px; padding:4px 8px; border-radius:999px; background:rgba(56,189,248,0.12); border:1px solid rgba(56,189,248,0.6); color:#7dd3fc;">ピッチ保持を準備中…</span>
@@ -272,6 +274,10 @@ class BassTabApp {
       <span id="editNoteInfo">音符を選択中</span>
       <button id="btnNoteUp" type="button" aria-label="音程を半音上げる" style="${BTN}">半音 ▲</button>
       <button id="btnNoteDown" type="button" aria-label="音程を半音下げる" style="${BTN}">半音 ▼</button>
+      <button id="btnNoteLeft" type="button" aria-label="音符を16分1つ前に移動" title="← キー (Shiftで4つ分)" style="${BTN}">◀ 移動</button>
+      <button id="btnNoteRight" type="button" aria-label="音符を16分1つ後に移動" title="→ キー (Shiftで4つ分)" style="${BTN}">移動 ▶</button>
+      <button id="btnNoteInsert" type="button" aria-label="直後の空き位置に音符を追加" title="Insert キー" style="${BTN}">＋ 追加</button>
+      <button id="btnNoteString" type="button" aria-label="同じ音高の別弦割当てへ変更" title="S キー" style="${BTN}">弦変更</button>
       <button id="btnNoteDelete" type="button" aria-label="選択中の音符を削除" style="${BTN}">🗑 削除</button>
       <button id="btnNoteClose" type="button" aria-label="音符編集を閉じる" style="${BTN}">✕ 閉じる</button>
     `;
@@ -336,6 +342,30 @@ class BassTabApp {
     bar.querySelector('#btnExportMidi').addEventListener('click', () => {
       this.exportMidi();
     });
+    bar.querySelector('#btnExportXml').addEventListener('click', () => {
+      this.exportMusicXml();
+    });
+    bar.querySelector('#btnPrintTab').addEventListener('click', () => {
+      this.printTab();
+    });
+
+    // 印刷専用エリア (画面では非表示。@media print でアプリ本体を隠し、これだけ出す)
+    if (!document.getElementById('tabPrintArea')) {
+      const printArea = document.createElement('div');
+      printArea.id = 'tabPrintArea';
+      document.body.appendChild(printArea);
+      const printStyle = document.createElement('style');
+      printStyle.textContent =
+        '#tabPrintArea{display:none;}' +
+        '@media print{' +
+        'body>*:not(#tabPrintArea){display:none!important;}' +
+        '#tabPrintArea{display:block!important;}' +
+        '#tabPrintArea img{width:100%;}' +
+        '@page{size:A4 landscape;margin:10mm;}' +
+        '}';
+      document.head.appendChild(printStyle);
+    }
+    this.domPrintArea = document.getElementById('tabPrintArea');
     this.domExtra.autoScrollBtn.addEventListener('click', () => {
       this.setAutoScrollUI(!this.autoScroll);
     });
@@ -344,8 +374,28 @@ class BassTabApp {
     });
     editBar.querySelector('#btnNoteUp').addEventListener('click', () => this.shiftSelectedNote(1));
     editBar.querySelector('#btnNoteDown').addEventListener('click', () => this.shiftSelectedNote(-1));
+    editBar.querySelector('#btnNoteLeft').addEventListener('click', () => this.moveSelectedNote(-1));
+    editBar.querySelector('#btnNoteRight').addEventListener('click', () => this.moveSelectedNote(1));
+    editBar.querySelector('#btnNoteInsert').addEventListener('click', () => this.insertNoteAfterSelected());
+    editBar.querySelector('#btnNoteString').addEventListener('click', () => this.cycleSelectedNoteString());
     editBar.querySelector('#btnNoteDelete').addEventListener('click', () => this.deleteSelectedNote());
     editBar.querySelector('#btnNoteClose').addEventListener('click', () => this.tabRenderer.setSelectedNote(-1));
+
+    // 音符編集中のキーボードショートカット (入力欄にフォーカスがある時は無効)
+    window.addEventListener('keydown', (e) => {
+      if (this.selectedNoteIndex < 0) return;
+      const tag = e.target && e.target.tagName;
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return;
+      switch (e.key) {
+        case 'ArrowLeft': e.preventDefault(); this.moveSelectedNote(e.shiftKey ? -4 : -1); break;
+        case 'ArrowRight': e.preventDefault(); this.moveSelectedNote(e.shiftKey ? 4 : 1); break;
+        case 'ArrowUp': e.preventDefault(); this.shiftSelectedNote(1); break;
+        case 'ArrowDown': e.preventDefault(); this.shiftSelectedNote(-1); break;
+        case 'Delete': case 'Backspace': e.preventDefault(); this.deleteSelectedNote(); break;
+        case 'Insert': e.preventDefault(); this.insertNoteAfterSelected(); break;
+        case 's': case 'S': this.cycleSelectedNoteString(); break;
+      }
+    });
 
     // 再生位置プログレスバー (譜面の直上)
     this.initProgressBar(tabContainer);
@@ -538,7 +588,7 @@ class BassTabApp {
       <div style="font-weight:700; margin-top:10px;">3. 譜面の操作</div>
       <div>譜面をドラッグすると左右にスクロールできます。クリックでその位置へジャンプ (シーク) します。「自動スクロール」をOFFにすると、再生中も譜面が追従しません。譜面の上の細いバーからも位置移動できます。</div>
       <div style="font-weight:700; margin-top:10px;">4. 音符の編集</div>
-      <div>譜面の音符をクリックすると選択でき、編集バーで半音の上げ下げと削除ができます。運指 (弦とフレット) は自動で最も近い位置に直ります。</div>
+      <div>譜面の音符をクリックすると選択でき、編集バーで半音の上げ下げ・16分単位の移動・追加・弦変更・削除ができます。半音を変えると運指 (弦とフレット) は自動で最も近い位置に直ります。キー操作: ←→ 移動 (Shiftで4つ分) / ↑↓ 半音 / Insert 追加 / S 弦変更 / Delete 削除。</div>
       <div style="font-weight:700; margin-top:10px;">5. 指板</div>
       <div>下の指板はタップするとその音が鳴ります。再生中は今弾くべきフレットが光ります。</div>
       <div style="font-weight:700; margin-top:10px;">6. 練習サポート</div>
@@ -743,6 +793,71 @@ class BassTabApp {
     this.showToast('音符を削除しました');
   }
 
+  // 編集操作の基準テンポ (グリッド計算用)。未解析時はレンダラーのBPMで代替する
+  editGridTempo() {
+    if (this.currentTempo && this.currentTempo.bpm) {
+      return { bpm: this.currentTempo.bpm, offset: this.currentTempo.offset || 0 };
+    }
+    return { bpm: (this.tabRenderer && this.tabRenderer.bpm) || 120, offset: 0 };
+  }
+
+  // 編集後の選択位置を保ったまま再描画する
+  applyEditResult(res) {
+    this.currentTabNotes = res.notes;
+    this.syncNotesAfterEdit();
+    if (this.tabRenderer) {
+      this.tabRenderer.setSelectedNote(res.index);
+      this.tabRenderer.render();
+    }
+    this.updateEditBar();
+  }
+
+  /**
+   * 選択中の音符を16分グリッドで前後に移動する (衝突時は単音化ルールで移動音を優先)
+   */
+  moveSelectedNote(deltaSlots) {
+    const idx = this.selectedNoteIndex;
+    if (idx < 0 || idx >= this.currentTabNotes.length) return;
+    const { bpm, offset } = this.editGridTempo();
+    const res = BassTabApp.moveNoteBySlots(this.currentTabNotes, idx, deltaSlots, bpm, offset);
+    if (!res) {
+      this.showToast('それ以上は移動できません');
+      return;
+    }
+    this.applyEditResult(res);
+  }
+
+  /**
+   * 選択中の音符の直後の空きスロットに同じ音を追加する
+   */
+  insertNoteAfterSelected() {
+    const idx = this.selectedNoteIndex;
+    if (idx < 0 || idx >= this.currentTabNotes.length) return;
+    const { bpm, offset } = this.editGridTempo();
+    const res = BassTabApp.insertNoteAfter(this.currentTabNotes, idx, bpm, offset);
+    if (!res) {
+      this.showToast('追加できる空き位置がありません');
+      return;
+    }
+    this.applyEditResult(res);
+    this.showToast('音符を追加しました');
+  }
+
+  /**
+   * 選択中の音符を、同じ音高の別弦割当てへ切り替える
+   */
+  cycleSelectedNoteString() {
+    const note = this.selectedNoteIndex >= 0 ? this.currentTabNotes[this.selectedNoteIndex] : null;
+    if (!note) return;
+    if (!BassTabApp.cycleStringAssignment(note, this.mapper)) {
+      this.showToast('この音は他の弦では弾けません');
+      return;
+    }
+    this.syncNotesAfterEdit();
+    if (this.tabRenderer) this.tabRenderer.render();
+    this.updateEditBar();
+  }
+
   /**
    * 編集結果をレンダラーとプレイヤーへ反映し、生成TABなら自動保存する
    */
@@ -849,6 +964,323 @@ class BassTabApp {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     this.showToast('🎹 MIDIファイルをダウンロードしました');
+  }
+
+  /**
+   * 現在のTABを MusicXML (.musicxml) として書き出す。
+   * MuseScore等のスコアソフトで開ける (音高・タイミング・弦/フレット付き)。
+   */
+  exportMusicXml() {
+    if (!this.currentTabNotes || this.currentTabNotes.length === 0) {
+      this.showToast('書き出すTABがありません');
+      return;
+    }
+    const { bpm, offset } = this.editGridTempo();
+    const xml = BassTabApp.buildMusicXml(
+      this.currentTabNotes, bpm, offset,
+      this.currentTrackTitle || 'BassTab', this.timeSignature || '4/4');
+    const blob = new Blob([xml], { type: 'application/vnd.recordare.musicxml+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safeName = (this.currentTrackTitle || 'basstab').replace(/[^\w\- ]+/g, '').trim() || 'basstab';
+    a.href = url;
+    a.download = `${safeName}.musicxml`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    this.showToast('🎼 MusicXMLをダウンロードしました');
+  }
+
+  /**
+   * 印刷用に、全曲を4小節ごとの段 (システム) に分けてレンダラーで描いた画像を生成する。
+   * レンダラーの canvas/ctx を一時的に差し替え、終了後に必ず元の表示状態へ戻す。
+   * @returns {string|null} PNG の data URL
+   */
+  buildPrintImage() {
+    const r = this.tabRenderer;
+    if (!r || !r.canvas) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const bpm = r.bpm || 120;
+    const beatsPerBar = typeof r.getBarBeatCount === 'function' ? r.getBarBeatCount() : 4;
+    const barInterval = (60 / bpm) * beatsPerBar;
+    const systemDur = barInterval * 4; // 1段 = 4小節
+    const firstStart = r.beatOffset - Math.ceil(r.beatOffset / barInterval) * barInterval;
+    const systems = Math.min(120, Math.max(1, Math.ceil((r.duration - firstStart) / systemDur)));
+    const stripCssW = Math.ceil(systemDur * r.pixelsPerSecond) + r.leftPadding + 8;
+    const stripCssH = r.totalHeight;
+    const gapCss = 10;
+
+    const out = document.createElement('canvas');
+    out.width = Math.round(stripCssW * dpr);
+    out.height = Math.round((stripCssH * systems + gapCss * (systems - 1)) * dpr);
+    const octx = out.getContext('2d');
+    octx.fillStyle = '#0a0f1d'; // 画面のTAB背景色に合わせ、明色の譜面要素が読めるようにする
+    octx.fillRect(0, 0, out.width, out.height);
+
+    const strip = document.createElement('canvas');
+    const saved = {
+      canvas: r.canvas, ctx: r.ctx, scrollX: r.scrollX,
+      currentTime: r.currentTime, selected: r.selectedNoteIndex, loop: r.loopEnabled
+    };
+    try {
+      r.canvas = strip;
+      r.ctx = strip.getContext('2d');
+      r.selectedNoteIndex = -1;
+      r.currentTime = -1; // 再生カーソルを印刷に出さない
+      r.loopEnabled = false;
+      for (let s = 0; s < systems; s++) {
+        strip.width = Math.round(stripCssW * dpr); // サイズ設定で ctx 状態はリセットされる
+        strip.height = Math.round(stripCssH * dpr);
+        r.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        r.scrollX = (firstStart + s * systemDur) * r.pixelsPerSecond;
+        r.render();
+        octx.drawImage(strip, 0, Math.round(s * (stripCssH + gapCss) * dpr));
+      }
+    } finally {
+      r.canvas = saved.canvas;
+      r.ctx = saved.ctx;
+      r.scrollX = saved.scrollX;
+      r.currentTime = saved.currentTime;
+      r.selectedNoteIndex = saved.selected;
+      r.loopEnabled = saved.loop;
+      r.resizeCanvas();
+      r.render();
+    }
+    return out.toDataURL('image/png');
+  }
+
+  /**
+   * TABを印刷する (ブラウザの印刷ダイアログからPDF保存も可能)。
+   * 印刷時のみ表示される #tabPrintArea に画像を差し込んでから print() を呼ぶ。
+   */
+  printTab() {
+    if (!this.tabRenderer || !this.currentTabNotes || this.currentTabNotes.length === 0) {
+      this.showToast('印刷するTABがありません');
+      return;
+    }
+    let dataUrl = null;
+    try {
+      dataUrl = this.buildPrintImage();
+    } catch (err) {
+      console.error('print image failed:', err);
+    }
+    const area = this.domPrintArea || document.getElementById('tabPrintArea');
+    if (!dataUrl || !area) {
+      this.showToast('印刷用画像の生成に失敗しました');
+      return;
+    }
+    const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const { bpm } = this.editGridTempo();
+    const dateStr = new Date().toLocaleDateString('ja-JP');
+    area.innerHTML =
+      `<h1 style="font:700 18px sans-serif;margin:0 0 4px;">${escHtml(this.currentTrackTitle || 'BassTab')}</h1>` +
+      `<p style="font:12px sans-serif;margin:0 0 10px;">BPM ${Math.round(bpm)} / ${escHtml(this.timeSignature || '4/4')} / ` +
+      `${this.tuning === '5' ? '5弦' : '4弦'}ベース / ${this.currentTabNotes.length}音 / ${dateStr} (BassTab AI)</p>` +
+      `<img src="${dataUrl}" alt="TAB譜" style="width:100%;">`;
+    const img = area.querySelector('img');
+    let printed = false;
+    const doPrint = () => { if (!printed) { printed = true; window.print(); } };
+    if (img && img.complete) setTimeout(doPrint, 50);
+    else if (img) { img.onload = doPrint; setTimeout(doPrint, 1500); }
+    else doPrint();
+  }
+
+  // ---- TAB編集の純粋ロジック (UIなしで単体検証できるよう静的メソッドにする) ----
+
+  static slotStepSec(bpm) { return (60 / bpm) / 4; }
+
+  static slotIndexOf(time, bpm, offset) {
+    return Math.round((time - offset) / BassTabApp.slotStepSec(bpm));
+  }
+
+  // 時間順に整え、隣の音と重ならないよう duration を丸める (量子化時と同じ規則)
+  static normalizeEditedNotes(notes) {
+    const sorted = [...notes].sort((a, b) => a.time - b.time);
+    for (let i = 0; i < sorted.length; i++) {
+      const cur = sorted[i];
+      const next = sorted[i + 1];
+      if (next && cur.time + cur.duration > next.time) {
+        cur.duration = Math.max(0.06, next.time - cur.time);
+      }
+      if (!(cur.duration > 0)) cur.duration = 0.06;
+    }
+    return sorted;
+  }
+
+  /**
+   * ノートを16分グリッドで前後に移動する。
+   * 移動先スロットに別の音がある場合は単音化ルール (1スロット1音) で移動音を優先する。
+   * @returns {{notes: Array, index: number}|null} 移動後の列と移動音の新しいインデックス
+   */
+  static moveNoteBySlots(notes, index, deltaSlots, bpm, offset) {
+    if (!notes || index < 0 || index >= notes.length || !bpm || !deltaSlots) return null;
+    const target = notes[index];
+    const fromSlot = BassTabApp.slotIndexOf(target.time, bpm, offset);
+    const toSlot = Math.max(0, fromSlot + deltaSlots);
+    if (toSlot === fromSlot) return null;
+    const kept = notes.filter((n, i) =>
+      i !== index && BassTabApp.slotIndexOf(n.time, bpm, offset) !== toSlot);
+    target.time = offset + toSlot * BassTabApp.slotStepSec(bpm);
+    const out = BassTabApp.normalizeEditedNotes([...kept, target]);
+    return { notes: out, index: out.indexOf(target) };
+  }
+
+  /**
+   * 選択ノートの直後で空いている最初のスロットに、同じ音のコピーを追加する。
+   * @returns {{notes: Array, index: number}|null}
+   */
+  static insertNoteAfter(notes, index, bpm, offset) {
+    if (!notes || index < 0 || index >= notes.length || !bpm) return null;
+    const step = BassTabApp.slotStepSec(bpm);
+    const ref = notes[index];
+    const occupied = new Set(notes.map(n => BassTabApp.slotIndexOf(n.time, bpm, offset)));
+    let slot = BassTabApp.slotIndexOf(ref.time, bpm, offset) + 1;
+    let guard = 0;
+    while (occupied.has(slot) && guard < 64) { slot++; guard++; }
+    if (occupied.has(slot)) return null;
+    const note = { ...ref, time: offset + slot * step, duration: step };
+    const out = BassTabApp.normalizeEditedNotes([...notes, note]);
+    return { notes: out, index: out.indexOf(note) };
+  }
+
+  /**
+   * 同じ音高を別弦で鳴らす割当てへ循環的に変更する (運指マッパーの候補を使う)。
+   * 候補が2つ未満なら null。
+   */
+  static cycleStringAssignment(note, mapper) {
+    if (!note || !mapper) return null;
+    const cands = mapper.getCandidates(note.midi);
+    if (cands.length < 2) return null;
+    const cur = cands.findIndex(c => c.string === note.string && c.fret === note.fret);
+    const next = cands[(cur + 1) % cands.length];
+    note.string = next.string;
+    note.fret = next.fret;
+    return note;
+  }
+
+  // ---- MusicXML 生成 (純粋ロジック) ----
+
+  /**
+   * currentTabNotes から MusicXML (score-partwise 4.0) を生成する。
+   * 16分グリッド (divisions=4) で音高・タイミング・弦/フレット (technical) を表現する。
+   * 小節をまたぐ音はタイで分割する。各小節の合計 duration は必ず小節長と一致する。
+   */
+  static buildMusicXml(notes, bpm, offset, title, timeSignature) {
+    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const tsMap = {
+      '4/4': { beats: 4, type: 4, slots: 16 },
+      '3/4': { beats: 3, type: 4, slots: 12 },
+      '6/8': { beats: 6, type: 8, slots: 12 }
+    };
+    const ts = tsMap[timeSignature] || tsMap['4/4'];
+    const stepNames = [['C', 0], ['C', 1], ['D', 0], ['D', 1], ['E', 0], ['F', 0],
+      ['F', 1], ['G', 0], ['G', 1], ['A', 0], ['A', 1], ['B', 0]];
+    const typeMap = { 1: ['16th', 0], 2: ['eighth', 0], 3: ['eighth', 1], 4: ['quarter', 0],
+      6: ['quarter', 1], 8: ['half', 0], 12: ['half', 1], 16: ['whole', 0] };
+    const typeOf = (slots) => {
+      if (typeMap[slots]) return typeMap[slots];
+      for (const s of [16, 12, 8, 6, 4, 3, 2, 1]) if (s < slots) return typeMap[s];
+      return typeMap[1];
+    };
+
+    const sorted = [...(notes || [])]
+      .filter(n => typeof n.midi === 'number')
+      .sort((a, b) => a.time - b.time);
+
+    // スロット単位のイベント列 (重なりは次の音の開始で丸める)
+    const events = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const n = sorted[i];
+      const start = Math.max(0, BassTabApp.slotIndexOf(n.time, bpm, offset));
+      let dur = Math.max(1, Math.round((n.duration || 0) / BassTabApp.slotStepSec(bpm)));
+      const next = sorted[i + 1];
+      if (next) {
+        const nextStart = Math.max(0, BassTabApp.slotIndexOf(next.time, bpm, offset));
+        if (start + dur > nextStart) dur = Math.max(1, nextStart - start);
+      }
+      events.push({ start, dur, note: n });
+    }
+
+    // 小節をまたぐ音をタイ付きセグメントに分割する
+    const segments = [];
+    for (const ev of events) {
+      let s = ev.start, remaining = ev.dur, first = true;
+      while (remaining > 0) {
+        const barEnd = (Math.floor(s / ts.slots) + 1) * ts.slots;
+        const segDur = Math.min(remaining, barEnd - s);
+        segments.push({
+          start: s, dur: segDur, note: ev.note,
+          tieStop: !first, tieStart: remaining - segDur > 0
+        });
+        s += segDur; remaining -= segDur; first = false;
+      }
+    }
+    segments.sort((a, b) => a.start - b.start);
+
+    const lastEnd = events.reduce((m, e) => Math.max(m, e.start + e.dur), 0);
+    const numBars = Math.max(1, Math.ceil(lastEnd / ts.slots));
+
+    const restXml = (dur) => {
+      const [type, dots] = typeOf(dur);
+      return `<note><rest/><duration>${dur}</duration><voice>1</voice><type>${type}</type>${dots ? '<dot/>' : ''}</note>`;
+    };
+    const noteXml = (seg, withTechnical) => {
+      const n = seg.note;
+      const pc = ((n.midi % 12) + 12) % 12;
+      const [step, sharp] = stepNames[pc];
+      const octave = Math.floor(n.midi / 12) - 1;
+      const [type, dots] = typeOf(seg.dur);
+      let xml = '<note>';
+      xml += `<pitch><step>${step}</step>${sharp ? '<alter>1</alter>' : ''}<octave>${octave}</octave></pitch>`;
+      xml += `<duration>${seg.dur}</duration>`;
+      if (seg.tieStop) xml += '<tie type="stop"/>';
+      if (seg.tieStart) xml += '<tie type="start"/>';
+      xml += `<voice>1</voice><type>${type}</type>${dots ? '<dot/>' : ''}`;
+      const notations = [];
+      if (seg.tieStop) notations.push('<tied type="stop"/>');
+      if (seg.tieStart) notations.push('<tied type="start"/>');
+      let notationXml = '';
+      if (notations.length) notationXml += notations.join('');
+      if (withTechnical && typeof n.string === 'number' && typeof n.fret === 'number') {
+        notationXml += `<technical><string>${n.string}</string><fret>${n.fret}</fret></technical>`;
+      }
+      if (notationXml) xml += `<notations>${notationXml}</notations>`;
+      xml += '</note>';
+      return xml;
+    };
+
+    const lines = [];
+    lines.push('<?xml version="1.0" encoding="UTF-8"?>');
+    lines.push('<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">');
+    lines.push('<score-partwise version="4.0">');
+    lines.push(`<work><work-title>${esc(title || 'BassTab')}</work-title></work>`);
+    lines.push('<part-list><score-part id="P1"><part-name>Electric Bass</part-name></score-part></part-list>');
+    lines.push('<part id="P1">');
+    for (let bar = 0; bar < numBars; bar++) {
+      const barStart = bar * ts.slots;
+      const barEnd = barStart + ts.slots;
+      lines.push(`<measure number="${bar + 1}">`);
+      if (bar === 0) {
+        lines.push(`<attributes><divisions>4</divisions><key><fifths>0</fifths></key>` +
+          `<time><beats>${ts.beats}</beats><beat-type>${ts.type}</beat-type></time>` +
+          `<clef><sign>F</sign><line>4</line></clef></attributes>`);
+        lines.push(`<sound tempo="${Math.round(bpm)}"/>`);
+      }
+      let cursor = barStart;
+      for (const seg of segments) {
+        if (seg.start < barStart || seg.start >= barEnd) continue;
+        if (seg.start > cursor) lines.push(restXml(seg.start - cursor));
+        lines.push(noteXml(seg, !seg.tieStop));
+        cursor = seg.start + seg.dur;
+      }
+      if (cursor < barEnd) lines.push(restXml(barEnd - cursor));
+      lines.push('</measure>');
+    }
+    lines.push('</part>');
+    lines.push('</score-partwise>');
+    return lines.join('\n') + '\n';
   }
 
   static buildMidiBytes(notes, bpm, title) {

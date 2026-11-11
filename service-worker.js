@@ -1,5 +1,5 @@
 // BassTab AI - Service Worker
-const CACHE_NAME = 'basstab-ai-v8';
+const CACHE_NAME = 'basstab-ai-v9';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -48,4 +48,3 @@ self.addEventListener('fetch', (event) => {
       .catch(() => caches.match(event.request))
   );
 });
-
