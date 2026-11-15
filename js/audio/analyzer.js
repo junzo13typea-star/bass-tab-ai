@@ -726,13 +726,121 @@ export class AudioAnalyzer {
     return out;
   }
 
+  /**
+   * テンポの局所追従: グリッドへの残差から区間ごとの位相ずれを推定し、
+   * 局所補正つきグリッド時刻を返す関数を作る。
+   * ライブ録音などテンポが微妙に揺れる曲で、曲の後半ほど拍がずれる問題への対策。
+   * 補正が小さい区間 (スタジオ録音など) ではデッドゾーンで 0 になり、従来動作と一致する。
+   * @returns {(k: number) => number} ステップ番号 k の補正済みグリッド時刻
+   */
+  buildLocalGrid(notes, step, offset) {
+    const identity = (k) => offset + k * step;
+    if (!notes || notes.length < 16 || !(step > 0)) return identity;
+
+    const SEG = 16; // 補正区間 = 16ステップ (4/4の1小節相当)
+    const segResids = new Map();
+    for (const n of notes) {
+      const k = Math.round((n.time - offset) / step);
+      const resid = n.time - (offset + k * step);
+      const s = Math.floor(k / SEG);
+      if (!segResids.has(s)) segResids.set(s, []);
+      segResids.get(s).push(resid);
+    }
+    if (segResids.size < 2) return identity;
+
+    // 区間ごとの位相ずれ = 残差の中央値
+    const raw = new Map();
+    for (const [s, resids] of segResids) {
+      if (resids.length < 3) continue;
+      const sorted = [...resids].sort((a, b) => a - b);
+      const d = sorted[Math.floor(sorted.length / 2)];
+      raw.set(s, { d: Math.max(-step * 0.5, Math.min(step * 0.5, d)), w: resids.length });
+    }
+    if (raw.size < 2) return identity;
+
+    // 全体の平均位相は estimateTempo の offset が担当するので差し引く。
+    // ここで追うのは「曲の中での相対的なずれ (ドリフト)」だけ。
+    let wsum = 0, vsum = 0;
+    for (const { d, w } of raw.values()) { wsum += w; vsum += w * d; }
+    const mean = wsum > 0 ? vsum / wsum : 0;
+
+    const segs = [...raw.keys()].sort((a, b) => a - b);
+    const sMin = segs[0], sMax = segs[segs.length - 1];
+    // 欠けた区間は線形補間で埋める (端は最寄りの観測値)
+    const filled = new Map();
+    for (let s = sMin; s <= sMax; s++) {
+      if (raw.has(s)) { filled.set(s, raw.get(s).d - mean); continue; }
+      let prev = null, next = null;
+      for (const o of segs) { if (o < s) prev = o; if (o > s && next === null) next = o; }
+      if (prev !== null && next !== null) {
+        const a = raw.get(prev).d - mean, b = raw.get(next).d - mean;
+        filled.set(s, a + (b - a) * (s - prev) / (next - prev));
+      } else {
+        filled.set(s, raw.get(prev !== null ? prev : next).d - mean);
+      }
+    }
+    // 平滑化 (重み 1,2,3,2,1 の移動平均) で検出ジッタへの反応を抑える
+    const smoothed = new Map();
+    const W = [1, 2, 3, 2, 1];
+    for (let s = sMin; s <= sMax; s++) {
+      let num = 0, den = 0;
+      for (let j = -2; j <= 2; j++) {
+        const v = filled.get(s + j);
+        if (v === undefined) continue;
+        num += v * W[j + 2]; den += W[j + 2];
+      }
+      smoothed.set(s, den > 0 ? num / den : 0);
+    }
+    // 傾き制限: 実ドリフトは1区間あたり数msしか進まない
+    const maxSlope = 0.006;
+    let prevD = smoothed.get(sMin);
+    for (let s = sMin + 1; s <= sMax; s++) {
+      let d = smoothed.get(s);
+      if (d - prevD > maxSlope) d = prevD + maxSlope;
+      if (d - prevD < -maxSlope) d = prevD - maxSlope;
+      smoothed.set(s, d);
+      prevD = d;
+    }
+    // デッドゾーン: 6ms未満は補正しない (定テンポの曲では全区間0 = 従来動作)
+    let any = false;
+    for (let s = sMin; s <= sMax; s++) {
+      let d = smoothed.get(s);
+      if (Math.abs(d) < 0.006) d = 0;
+      smoothed.set(s, d);
+      if (d !== 0) any = true;
+    }
+    if (!any) return identity;
+
+    const deltaAt = (s) => {
+      if (s <= sMin) return smoothed.get(sMin);
+      if (s >= sMax) return smoothed.get(sMax);
+      return smoothed.get(s);
+    };
+    // 区間中心をアンカーとして線形補間する (区間境界での不連続を避ける)
+    return (k) => {
+      const pos = k / SEG - 0.5; // アンカー座標 (区間 s の中心が s)
+      const s0 = Math.floor(pos);
+      const frac = pos - s0;
+      const d = deltaAt(s0) * (1 - frac) + deltaAt(s0 + 1) * frac;
+      return offset + k * step + d;
+    };
+  }
+
   quantizeNotes(notes, bpm, offset = 0) {
     if (!notes || notes.length === 0 || !bpm) return notes;
     const step = (60 / bpm) / 4; // 16分音符の長さ
     const split = this.splitSustainedNotes(notes, step, offset);
+    const gridTime = this.buildLocalGrid(split, step, offset);
     const snapped = split.map(n => {
-      const k = Math.round((n.time - offset) / step);
-      return { ...n, time: offset + k * step, _slot: k };
+      // 補正済みグリッドに最も近いステップへ吸着 (補正は最大でも半ステップなので近傍だけ見る)
+      const k0 = Math.round((n.time - offset) / step);
+      let bestK = k0;
+      let bestDist = Infinity;
+      for (let k = k0 - 1; k <= k0 + 1; k++) {
+        const dist = Math.abs(n.time - gridTime(k));
+        if (dist < bestDist) { bestDist = dist; bestK = k; }
+      }
+      return { ...n, time: gridTime(bestK), _slot: bestK };
     });
     // 単音化: ベースは単音楽器なので、同じ16分スロットに複数の音が吸着した場合は
     // 1音だけ残す (フルミックス等で他楽器の音が同じ位置に重なる対策)。

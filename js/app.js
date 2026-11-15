@@ -65,6 +65,13 @@ class BassTabApp {
     this.tabRenderer.onNoteSelect = (index, note) => {
       this.selectedNoteIndex = index;
       this.updateEditBar();
+      // 試聴: 選択した音符の音程をベース音で鳴らし、採譜ミスに耳で気づけるようにする。
+      // 半音修正などの編集後も applyEditResult が再選択するので、変更後の音がそのまま確認できる。
+      if (note && typeof note.midi === 'number' && this.synth) {
+        const dur = Math.min(0.6, Math.max(0.25, note.duration || 0.4));
+        const vel = Math.min(1, Math.max(0.4, note.velocity || 0.85));
+        this.synth.playNote(note.midi, dur, vel);
+      }
     };
 
     // 3. バーチャル指板の初期化 (フレットタップで音を鳴らす)
