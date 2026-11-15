@@ -147,7 +147,7 @@ export class Controls {
     this.dom.timeDisplay.textContent = `${curStr} / ${durStr}`;
   }
 
-  showProgress(percent, message = 'ベース音を解析中...') {
+  showProgress(percent, message = 'ベース音を解析中...', onCancel = null) {
     if (this.dom.loadingOverlay) {
       this.dom.loadingOverlay.style.display = 'flex';
     }
@@ -157,12 +157,35 @@ export class Controls {
     if (this.dom.loadingText) {
       this.dom.loadingText.textContent = `${message} (${Math.round(percent * 100)}%)`;
     }
+    // キャンセルボタン: ハンドラが渡されたときだけ表示する (解析中のみ)
+    if (typeof onCancel === 'function') {
+      this._onCancel = onCancel;
+      const btn = this._ensureCancelButton();
+      if (btn) btn.style.display = 'block';
+    }
+  }
+
+  // 進捗カード内にキャンセルボタンを1度だけ生成する (index.html は編集しない方針のため動的生成)
+  _ensureCancelButton() {
+    if (this._cancelBtn) return this._cancelBtn;
+    if (!this.dom.loadingText || !this.dom.loadingText.parentElement) return null;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'btnCancelAnalysis';
+    btn.textContent = '✖ 解析をキャンセル';
+    btn.style.cssText = 'display:block; margin:14px auto 0; padding:8px 18px; border-radius:999px; border:1px solid rgba(255,255,255,0.35); background:rgba(255,255,255,0.08); color:#fff; font-size:13px; cursor:pointer;';
+    btn.addEventListener('click', () => { if (this._onCancel) this._onCancel(); });
+    this.dom.loadingText.parentElement.appendChild(btn);
+    this._cancelBtn = btn;
+    return btn;
   }
 
   hideProgress() {
     if (this.dom.loadingOverlay) {
       this.dom.loadingOverlay.style.display = 'none';
     }
+    if (this._cancelBtn) this._cancelBtn.style.display = 'none';
+    this._onCancel = null;
   }
 
   formatTime(seconds) {

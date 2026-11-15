@@ -1503,21 +1503,32 @@ class BassTabApp {
 
     const fileName = file.name.replace(/\.[^/.]+$/, "");
     this.currentTrackTitle = fileName;
-    this.controls.showProgress(0.05, 'オーディオファイルをデコード中...');
+    // 解析キャンセル用トークン (進捗画面のボタンで cancelled を立てる)
+    const cancelToken = { cancelled: false };
+    const throwIfCancelled = () => {
+      if (cancelToken.cancelled) {
+        const e = new Error('解析がキャンセルされました');
+        e.code = 'ANALYSIS_CANCELLED';
+        throw e;
+      }
+    };
+    this.controls.showProgress(0.05, 'オーディオファイルをデコード中...', () => { cancelToken.cancelled = true; });
 
     try {
       // 1. デコード
       const audioBuffer = await this.analyzer.decodeAudio(file);
       this.currentAudioBuffer = audioBuffer;
+      throwIfCancelled();
 
       // 2. ベース帯域抽出
       this.controls.showProgress(0.25, 'ベース周波数帯域を抽出中...');
       const bassBuffer = await this.analyzer.filterBassBand(audioBuffer);
+      throwIfCancelled();
 
       // 3. ピッチ＆ノート検出 (感度・チューニング設定を反映)
       const rawNotes = await this.analyzer.analyzeBassline(bassBuffer, (pct) => {
         this.controls.showProgress(0.3 + pct * 0.5, 'ベース音程とリズムを採譜中...');
-      }, { sensitivity: this.sensitivity, tuning: this.tuning });
+      }, { sensitivity: this.sensitivity, tuning: this.tuning, cancelToken });
 
       // 4. テンポ推定とリズム量子化 (拍グリッドへ吸着させ、小節線とリズムを一致させる)
       const tempo = this.analyzer.estimateTempo(rawNotes);
@@ -1579,6 +1590,12 @@ class BassTabApp {
       this.showToast(`🎉 「${fileName}」のベースTAB譜を生成しました！`);
 
     } catch (err) {
+      // ユーザーがキャンセルした場合は失敗扱いにせず、静かに戻る
+      if (err && err.code === 'ANALYSIS_CANCELLED') {
+        this.controls.hideProgress();
+        this.showToast('解析をキャンセルしました');
+        return;
+      }
       console.error('Audio processing error:', err);
       this.controls.hideProgress();
       this.showMessage('音声の解析に失敗しました', [

@@ -106,6 +106,16 @@ export class AudioAnalyzer {
       high:   { noiseMul: 0.03, floor: 0.004, clarity: 0.50 }
     }[options.sensitivity] || { noiseMul: 0.06, floor: 0.008, clarity: 0.60 };
 
+    // キャンセル用トークン (options.cancelToken.cancelled が true になったら中断する)
+    const cancelToken = options.cancelToken || null;
+    const checkCancelled = () => {
+      if (cancelToken && cancelToken.cancelled) {
+        const err = new Error('解析がキャンセルされました');
+        err.code = 'ANALYSIS_CANCELLED';
+        throw err;
+      }
+    };
+
     // チューニング (5弦時は Low B まで解析下限を広げる)
     const is5String = options.tuning === '5';
     const minMidi = is5String ? 23 : 28;
@@ -161,6 +171,7 @@ export class AudioAnalyzer {
 
       // メインスレッドを定期的に解放し、進捗表示の再描画とUI応答を可能にする
       if (i % 50 === 49) {
+        checkCancelled();
         await new Promise(r => setTimeout(r, 0));
       }
     }
@@ -255,6 +266,7 @@ export class AudioAnalyzer {
 
       // ノート化ループでも定期的に譲歩する
       if (i % 100 === 99) {
+        checkCancelled();
         await new Promise(r => setTimeout(r, 0));
       }
     }
