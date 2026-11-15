@@ -159,7 +159,11 @@ class BassTabApp {
         if (this.player.isPlaying) {
           this.player.pause();
         } else {
-          this.player.play();
+          // メトロノームの拍グリッドを現在のテンポに同期してから再生する
+          const { bpm, offset } = this.editGridTempo();
+          const bpb = this.timeSignature === '6/8' ? 3 : (parseInt(this.timeSignature, 10) || 4);
+          this.player.setMetronomeGrid(bpm, offset, bpb);
+          this.player.play({ countIn: true });
         }
       },
       onStop: () => {
@@ -263,6 +267,8 @@ class BassTabApp {
       <button id="btnExportXml" type="button" aria-label="MusicXML書き出し" style="${BTN}">🎼 MusicXML</button>
       <button id="btnPrintTab" type="button" aria-label="TABを印刷またはPDF保存" style="${BTN}">🖨 印刷/PDF</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
+      <button id="btnMetronome" type="button" aria-label="メトロノームの切り替え" aria-pressed="false" style="${BTN}">🥁 メトロノーム: OFF</button>
+      <button id="btnCountIn" type="button" aria-label="カウントインの切り替え" aria-pressed="false" style="${BTN}">⏱ カウントイン: OFF</button>
       <button id="btnHelp" type="button" aria-label="使い方を表示" style="${BTN}">❓ 使い方</button>
       <span id="stretchBadge" role="status" style="display:none; font-size:12px; padding:4px 8px; border-radius:999px; background:rgba(56,189,248,0.12); border:1px solid rgba(56,189,248,0.6); color:#7dd3fc;">ピッチ保持を準備中…</span>
     `;
@@ -291,6 +297,8 @@ class BassTabApp {
       tuningSelect: bar.querySelector('#ctlTuning'),
       sensSelect: bar.querySelector('#ctlSensitivity'),
       autoScrollBtn: bar.querySelector('#btnAutoScroll'),
+      metronomeBtn: bar.querySelector('#btnMetronome'),
+      countInBtn: bar.querySelector('#btnCountIn'),
       bpmInput: bar.querySelector('#ctlBpm'),
       editBar,
       editNoteInfo: editBar.querySelector('#editNoteInfo')
@@ -370,6 +378,14 @@ class BassTabApp {
     this.domExtra.autoScrollBtn.addEventListener('click', () => {
       this.setAutoScrollUI(!this.autoScroll);
     });
+    this.domExtra.metronomeBtn.addEventListener('click', () => {
+      this.setMetronomeUI(!this.player.metronomeEnabled);
+      this.saveSettings();
+    });
+    this.domExtra.countInBtn.addEventListener('click', () => {
+      this.setCountInUI(!this.player.countInEnabled);
+      this.saveSettings();
+    });
     bar.querySelector('#btnHelp').addEventListener('click', () => {
       this.openHelp();
     });
@@ -436,6 +452,28 @@ class BassTabApp {
     if (this.domExtra && this.domExtra.autoScrollBtn) {
       this.domExtra.autoScrollBtn.textContent = this.autoScroll ? '⇥ 自動スクロール: ON' : '⇥ 自動スクロール: OFF';
       this.domExtra.autoScrollBtn.setAttribute('aria-pressed', String(this.autoScroll));
+    }
+  }
+
+  /**
+   * メトロノームの ON/OFF を切り替える (再生中も即反映される)
+   */
+  setMetronomeUI(enabled) {
+    if (this.player) this.player.setMetronomeEnabled(enabled);
+    if (this.domExtra && this.domExtra.metronomeBtn) {
+      this.domExtra.metronomeBtn.textContent = enabled ? '🥁 メトロノーム: ON' : '🥁 メトロノーム: OFF';
+      this.domExtra.metronomeBtn.setAttribute('aria-pressed', String(!!enabled));
+    }
+  }
+
+  /**
+   * カウントインの ON/OFF を切り替える (再生ボタンで開始したときだけ1小節入る)
+   */
+  setCountInUI(enabled) {
+    if (this.player) this.player.setCountInEnabled(enabled);
+    if (this.domExtra && this.domExtra.countInBtn) {
+      this.domExtra.countInBtn.textContent = enabled ? '⏱ カウントイン: ON' : '⏱ カウントイン: OFF';
+      this.domExtra.countInBtn.setAttribute('aria-pressed', String(!!enabled));
     }
   }
 
@@ -653,6 +691,8 @@ class BassTabApp {
         isMuteAudio: this.player ? this.player.isMuteAudio : false,
         isMuteBass: this.player ? this.player.isMuteBass : false,
         playbackRate: this.player ? this.player.playbackRate : 1.0,
+        metronome: this.player ? this.player.metronomeEnabled : false,
+        countIn: this.player ? this.player.countInEnabled : false,
         timeSignature: this.timeSignature,
         tuning: this.tuning,
         sensitivity: this.sensitivity
@@ -717,6 +757,9 @@ class BassTabApp {
         dom.btnMuteBass.textContent = '🔇 ベースOFF';
       }
     }
+    // メトロノーム / カウントイン (ボタン表示も同期)
+    if (s.metronome) this.setMetronomeUI(true);
+    if (s.countIn) this.setCountInUI(true);
     // 再生速度 (スライダーとラベルも同期)
     if (typeof s.playbackRate === 'number' && s.playbackRate !== 1) {
       this.player.setPlaybackRate(s.playbackRate);

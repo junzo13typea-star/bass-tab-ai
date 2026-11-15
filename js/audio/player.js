@@ -39,6 +39,18 @@ export class SyncPlayer {
     this.loopStart = 0;
     this.loopEnd = 0;
 
+    // メトロノーム / カウントイン
+    this.metronomeEnabled = false;
+    this.countInEnabled = false;
+    this.metroBpm = 120;
+    this.metroOffset = 0;
+    this.beatsPerBar = 4;
+    this.metronomeGainNode = null;
+    this.nextClickTime = null;   // 次クリックの曲時間 (秒)。null なら再計算
+    this.nextClickBeat = 0;      // 次クリックの拍番号 (グリッド原点からの通し番号)
+    this.countInEndCtxTime = 0;  // カウントイン終了の ctx 時刻 (0 = なし)
+    this.pendingClicks = [];     // 予約済みクリック音 {osc, at}
+
     // 先読みスケジューラー
     this.scheduleTimer = null;
     this.scheduledNoteIndex = 0;
@@ -70,6 +82,10 @@ export class SyncPlayer {
     this.audioGainNode = this.ctx.createGain();
     this.audioGainNode.gain.value = this.audioVolume;
     this.audioGainNode.connect(this.ctx.destination);
+
+    this.metronomeGainNode = this.ctx.createGain();
+    this.metronomeGainNode.gain.value = 0.9;
+    this.metronomeGainNode.connect(this.ctx.destination);
   }
 
   loadTrack(audioBuffer, tabNotes) {
@@ -94,14 +110,26 @@ export class SyncPlayer {
     this.scheduledNoteIndex = 0;
   }
 
-  play() {
+  play(options = {}) {
     if (this.isPlaying) return;
     if (this.ctx.state === 'suspended') {
       this.ctx.resume();
     }
 
     this.isPlaying = true;
-    this.startTime = this.ctx.currentTime - (this.pauseOffset / this.playbackRate);
+
+    // カウントイン (再生ボタンの直接操作時のみ): 1小節分のクリックを入れてから開始する。
+    // シーク・速度変更・ループの内部リスタートでは options.countIn が付かないので入らない。
+    const wantCountIn = !!(options && options.countIn && this.countInEnabled);
+    const spb = 60 / this.metroBpm;
+    let countInCtxDur = 0;
+    if (wantCountIn) {
+      countInCtxDur = (this.beatsPerBar * spb) / this.playbackRate;
+      this.countInEndCtxTime = this.ctx.currentTime + countInCtxDur;
+    } else {
+      this.countInEndCtxTime = 0;
+    }
+    this.startTime = this.ctx.currentTime + countInCtxDur - (this.pauseOffset / this.playbackRate);
 
     // 1. 元音源オーディオの再生スタート
     if (this.audioBuffer) {
@@ -121,7 +149,11 @@ export class SyncPlayer {
       this.sourceNode.connect(this.audioGainNode);
 
       const offset = Math.max(0, Math.min(this.pauseOffset * this.activeBufferScale, useBuffer.duration));
-      this.sourceNode.start(0, offset);
+      if (countInCtxDur > 0) {
+        this.sourceNode.start(this.countInEndCtxTime, offset);
+      } else {
+        this.sourceNode.start(0, offset);
+      }
 
       this.sourceNode.onended = () => {
         if (this.isPlaying && !this.loopEnabled && this.currentTime >= this.duration - 0.2) {
@@ -131,7 +163,16 @@ export class SyncPlayer {
       };
     }
 
+    // カウントインのクリックを予約する (最後のクリックが開始位置と同時)
+    if (wantCountIn) {
+      for (let m = this.beatsPerBar; m >= 1; m--) {
+        const atCtx = this.countInEndCtxTime - (m * spb) / this.playbackRate;
+        this.playClick(atCtx, m === this.beatsPerBar);
+      }
+    }
+
     // 2. 先読みベース音スケジューラーの開始
+    this.nextClickTime = null;
     this.findNextNoteIndex(this.pauseOffset);
     this.runScheduler();
 
@@ -144,6 +185,10 @@ export class SyncPlayer {
   pause() {
     if (!this.isPlaying) return;
     this.isPlaying = false;
+
+    // 予約済みクリック (カウントイン含む) を止める
+    this.stopPendingClicks();
+    this.countInEndCtxTime = 0;
 
     // 現在時刻の記録
     this.pauseOffset = this.currentTime;
@@ -277,6 +322,88 @@ export class SyncPlayer {
     }
   }
 
+  // ===== メトロノーム / カウントイン =====
+
+  /** 拍グリッド (BPM・最初の拍の位置・1小節の拍数) を設定する */
+  setMetronomeGrid(bpm, offset, beatsPerBar) {
+    if (isFinite(bpm) && bpm > 0) this.metroBpm = bpm;
+    if (isFinite(offset)) this.metroOffset = offset;
+    if (Number.isInteger(beatsPerBar) && beatsPerBar >= 1 && beatsPerBar <= 12) {
+      this.beatsPerBar = beatsPerBar;
+    }
+    this.nextClickTime = null; // 次回スケジューラで現在位置から再計算
+  }
+
+  setMetronomeEnabled(enabled) {
+    this.metronomeEnabled = !!enabled;
+    if (!this.metronomeEnabled) {
+      this.nextClickTime = null;
+      this.stopPendingClicks();
+    }
+  }
+
+  setCountInEnabled(enabled) {
+    this.countInEnabled = !!enabled;
+  }
+
+  isCountInActive() {
+    return this.countInEndCtxTime > 0 && this.ctx.currentTime < this.countInEndCtxTime;
+  }
+
+  /** クリック音を ctx 時刻に予約する (小節頭はアクセント) */
+  playClick(atCtxTime, accent) {
+    if (!this.metronomeGainNode) return;
+    try {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = accent ? 1760 : 1175;
+      g.gain.setValueAtTime(accent ? 0.55 : 0.35, atCtxTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, atCtxTime + 0.05);
+      osc.connect(g);
+      g.connect(this.metronomeGainNode);
+      osc.start(atCtxTime);
+      osc.stop(atCtxTime + 0.06);
+      this.pendingClicks.push({ osc, at: atCtxTime });
+    } catch (e) { /* クリックの失敗で再生を止めない */ }
+  }
+
+  stopPendingClicks() {
+    const now = this.ctx.currentTime;
+    for (const c of this.pendingClicks) {
+      if (c.at > now - 0.01) {
+        try { c.osc.stop(); } catch (e) {}
+      }
+    }
+    this.pendingClicks = [];
+  }
+
+  /** スケジューラ窓内の拍グリッドへクリックを予約する */
+  scheduleMetronomeClicks(currentAudioTime, scheduleWindowEnd) {
+    if (!this.metronomeEnabled) return;
+    const spb = 60 / this.metroBpm;
+
+    if (this.nextClickTime === null || this.nextClickTime < currentAudioTime - spb) {
+      const k = Math.ceil((currentAudioTime - this.metroOffset) / spb - 1e-6);
+      this.nextClickBeat = k;
+      this.nextClickTime = this.metroOffset + k * spb;
+    }
+
+    while (this.nextClickTime <= scheduleWindowEnd) {
+      const withinSong = this.duration <= 0 || this.nextClickTime <= this.duration + spb;
+      if (withinSong && this.nextClickTime >= currentAudioTime - 0.05) {
+        const atCtx = this.startTime + (this.nextClickTime / this.playbackRate);
+        const beatInBar = ((this.nextClickBeat % this.beatsPerBar) + this.beatsPerBar) % this.beatsPerBar;
+        this.playClick(atCtx, beatInBar === 0);
+      }
+      this.nextClickTime += spb;
+      this.nextClickBeat++;
+    }
+
+    const now = this.ctx.currentTime;
+    this.pendingClicks = this.pendingClicks.filter(c => c.at > now - 1);
+  }
+
   findNextNoteIndex(time) {
     this.scheduledNoteIndex = 0;
     for (let i = 0; i < this.tabNotes.length; i++) {
@@ -295,6 +422,15 @@ export class SyncPlayer {
 
     const currentAudioTime = (this.ctx.currentTime - this.startTime) * this.playbackRate;
     const scheduleWindowEnd = currentAudioTime + (this.scheduleAheadTime * this.playbackRate);
+
+    // カウントイン中はノートもクリックも予約しない (クリックは play() で予約済み)
+    if (this.isCountInActive()) {
+      this.scheduleTimer = setTimeout(() => this.runScheduler(), this.lookaheadMs);
+      return;
+    }
+
+    // メトロノームのクリック予約
+    this.scheduleMetronomeClicks(currentAudioTime, scheduleWindowEnd);
 
     // ループチェック
     if (this.loopEnabled && this.loopEnd > this.loopStart && currentAudioTime >= this.loopEnd) {
@@ -338,6 +474,10 @@ export class SyncPlayer {
     if (!this.isPlaying) return;
 
     this.currentTime = (this.ctx.currentTime - this.startTime) * this.playbackRate;
+    if (this.isCountInActive()) {
+      // カウントイン中は開始位置に留める
+      this.currentTime = this.pauseOffset;
+    }
     if (this.duration > 0) {
       this.currentTime = Math.min(this.currentTime, this.duration);
     }

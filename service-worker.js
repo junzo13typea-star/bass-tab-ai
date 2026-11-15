@@ -1,5 +1,5 @@
 // BassTab AI - Service Worker
-const CACHE_NAME = 'basstab-ai-v11';
+const CACHE_NAME = 'basstab-ai-v12';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
