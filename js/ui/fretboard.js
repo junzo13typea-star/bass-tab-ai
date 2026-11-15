@@ -22,7 +22,7 @@ export class FretboardUI {
 
   /**
    * チューニングを設定し、弦の行数を連動させる ('4' = 4行 / '5' = B弦行を追加)
-   * 注: .fret-cell.string-5 の見た目は Mac 側 CSS の対応が必要 (UI-FIXLOG のTODO参照)
+   * 注: .fret-cell.string-5 の見た目は CSS 側で対応済み (2026-11-15 実機確認)
    */
   setTuning(tuning) {
     const count = tuning === '5' ? 5 : 4;

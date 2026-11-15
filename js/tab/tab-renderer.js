@@ -12,6 +12,9 @@ export class TabRenderer {
     this.container = containerElement;
     this.ctx = canvasElement.getContext('2d');
 
+    // 印刷用レンダリングフラグ (true の間は紙向けの明色パレットで描く)
+    this.forPrint = false;
+
     this.tabNotes = [];
     this.duration = 0;
     this.bpm = 120; // デフォルト推定テンポ
@@ -50,6 +53,48 @@ export class TabRenderer {
     this.onSeek = null; // (seconds) => {}
 
     this.initEvents();
+  }
+
+  // 描画パレット (画面用ダーク / 印刷用ライト)。印刷時は白地に濃色で描き、紙で読める譜面にする
+  pal() {
+    if (this.forPrint) {
+      return {
+        plate: '#ffffff',
+        stringLine: 'rgba(30, 41, 59, 0.45)',
+        stringLineLast: 'rgba(30, 41, 59, 0.65)',
+        label: '#475569',
+        barLine: 'rgba(15, 23, 42, 0.6)',
+        beatLine: 'rgba(15, 23, 42, 0.15)',
+        logoText: '#0369a1',
+        logoBorder: 'rgba(15, 23, 42, 0.25)',
+        noteFill: '#ffffff',
+        noteRing: '#334155',
+        noteText: '#0f172a',
+        lowConfRing: '#b45309',
+        lowConfText: '#b45309',
+        durLine: 'rgba(51, 65, 85, 0.55)',
+        legend: '#b45309',
+        noteNameSel: '#0f172a'
+      };
+    }
+    return {
+      plate: '#0a0f1d',
+      stringLine: 'rgba(255, 255, 255, 0.2)',
+      stringLineLast: 'rgba(255, 255, 255, 0.35)',
+      label: '#94a3b8',
+      barLine: 'rgba(255, 255, 255, 0.4)',
+      beatLine: 'rgba(255, 255, 255, 0.08)',
+      logoText: '#38bdf8',
+      logoBorder: 'rgba(255, 255, 255, 0.12)',
+      noteFill: '#0f172a',
+      noteRing: 'rgba(56, 189, 248, 0.5)',
+      noteText: '#f1f5f9',
+      lowConfRing: '#f59e0b',
+      lowConfText: '#fbbf24',
+      durLine: 'rgba(56, 189, 248, 0.35)',
+      legend: '#f59e0b',
+      noteNameSel: '#e0f2fe'
+    };
   }
 
   // キャンバス高さ: 最下弦の下に 51px の余白 (4弦時 = 従来の 180px と一致)
@@ -291,13 +336,14 @@ export class TabRenderer {
     this.renderBeatsAndBars(ctx, width, height);
 
     // 3. TAB弦 (1弦G, 2弦D, 3弦A, 4弦E / 5弦時は最下行にB)
+    const C = this.pal();
     const stringLabels = { 1: 'G (1弦)', 2: 'D (2弦)', 3: 'A (3弦)', 4: 'E (4弦)', 5: 'B (5弦)' };
     for (let stringNum = 1; stringNum <= this.stringCount; stringNum++) {
       const y = this.staffTop + (stringNum - 1) * this.lineSpacing;
 
       // 弦の太さ (最下弦が最も太い)
       const stringThickness = 1.0 + (stringNum - 1) * 0.8;
-      ctx.strokeStyle = stringNum === this.stringCount ? 'rgba(255, 255, 255, 0.35)' : 'rgba(255, 255, 255, 0.2)';
+      ctx.strokeStyle = stringNum === this.stringCount ? C.stringLineLast : C.stringLine;
       ctx.lineWidth = stringThickness;
 
       ctx.beginPath();
@@ -305,8 +351,8 @@ export class TabRenderer {
       ctx.lineTo(width, y);
       ctx.stroke();
 
-      // 弦名ラベル (左固定エリア) — 背景 #0a0f1d に対し 4.5:1 以上を確保した明度
-      ctx.fillStyle = '#94a3b8';
+      // 弦名ラベル (左固定エリア) — 背景に対し十分なコントラストを確保した明度
+      ctx.fillStyle = C.label;
       ctx.font = 'bold 10px monospace';
       ctx.textAlign = 'right';
       ctx.fillText(stringLabels[stringNum], this.leftPadding - 18, y + 3.5);
@@ -346,6 +392,7 @@ export class TabRenderer {
   }
 
   renderBeatsAndBars(ctx, width, height) {
+    const C = this.pal();
     const beatInterval = 60.0 / this.bpm; // 1拍 (4分音符) の秒数
     const beatsPerBar = this.getBarBeatCount();
     const barInterval = beatInterval * beatsPerBar;
@@ -362,7 +409,7 @@ export class TabRenderer {
 
       if (barX >= this.leftPadding && barX <= width) {
         // 小節線
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.strokeStyle = C.barLine;
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(barX, this.staffTop);
@@ -371,7 +418,7 @@ export class TabRenderer {
 
         // 小節番号 (拍オフセット前のピックアップ小節は番号なし)
         if (bar >= 0) {
-          ctx.fillStyle = '#94a3b8';
+          ctx.fillStyle = C.label;
           ctx.font = 'bold 11px monospace';
           ctx.textAlign = 'left';
           ctx.fillText(`M.${bar + 1}`, barX + 6, this.staffTop - 12);
@@ -383,7 +430,7 @@ export class TabRenderer {
         const beatTime = barTime + beatPos * beatInterval;
         const beatX = (beatTime * this.pixelsPerSecond) + this.leftPadding - this.scrollX;
         if (beatX >= this.leftPadding && beatX <= width) {
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+          ctx.strokeStyle = C.beatLine;
           ctx.lineWidth = 1;
           ctx.setLineDash([3, 4]);
           ctx.beginPath();
@@ -397,12 +444,13 @@ export class TabRenderer {
   }
 
   renderTabLogo(ctx) {
+    const C = this.pal();
     // 左端の背景プレート
-    ctx.fillStyle = '#0a0f1d';
+    ctx.fillStyle = C.plate;
     ctx.fillRect(0, 0, this.leftPadding - 8, this.totalHeight);
 
     // 境界線
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.strokeStyle = C.logoBorder;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(this.leftPadding - 8, 15);
@@ -410,7 +458,7 @@ export class TabRenderer {
     ctx.stroke();
 
     // TAB文字
-    ctx.fillStyle = '#38bdf8';
+    ctx.fillStyle = C.logoText;
     ctx.font = '900 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('T', 20, this.staffTop + this.lineSpacing * 0 + 6);
@@ -419,6 +467,7 @@ export class TabRenderer {
   }
 
   renderNotes(ctx, width) {
+    const C = this.pal();
     for (let i = 0; i < this.tabNotes.length; i++) {
       const note = this.tabNotes[i];
       const noteX = (note.time * this.pixelsPerSecond) + this.leftPadding - this.scrollX;
@@ -437,13 +486,13 @@ export class TabRenderer {
       if (lowConf) this._sawLowConf = true;
 
       // フレット番号の背景円 (弦の線を隠して数字を読みやすく)
-      ctx.fillStyle = isCurrentlyPlaying ? '#0284c7' : '#0f172a';
+      ctx.fillStyle = isCurrentlyPlaying ? '#0284c7' : C.noteFill;
       ctx.beginPath();
       ctx.arc(noteX, noteY, 11, 0, Math.PI * 2);
       ctx.fill();
 
       // フレット円の枠線 (選択中は白リング＋シアンのグローで基調色に統一して明示)
-      ctx.strokeStyle = isSelected ? '#ffffff' : (isCurrentlyPlaying ? '#38bdf8' : (lowConf ? '#f59e0b' : 'rgba(56, 189, 248, 0.5)'));
+      ctx.strokeStyle = isSelected ? '#ffffff' : (isCurrentlyPlaying ? '#38bdf8' : (lowConf ? C.lowConfRing : C.noteRing));
       ctx.lineWidth = isSelected ? 3.5 : (isCurrentlyPlaying ? 2.5 : (lowConf ? 2.5 : 1.5));
       if (isCurrentlyPlaying || isSelected) {
         ctx.shadowColor = '#38bdf8';
@@ -453,7 +502,7 @@ export class TabRenderer {
       ctx.shadowBlur = 0;
 
       // フレット番号テキスト
-      ctx.fillStyle = isCurrentlyPlaying ? '#ffffff' : (lowConf ? '#fbbf24' : '#f1f5f9');
+      ctx.fillStyle = isCurrentlyPlaying ? '#ffffff' : (lowConf ? C.lowConfText : C.noteText);
       ctx.font = 'bold 12px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -462,7 +511,7 @@ export class TabRenderer {
       // 音価ライン (音の長さを表す水平バー)
       const noteWidth = Math.max(6, note.duration * this.pixelsPerSecond - 4);
       if (noteWidth > 14) {
-        ctx.strokeStyle = isCurrentlyPlaying ? '#38bdf8' : 'rgba(56, 189, 248, 0.35)';
+        ctx.strokeStyle = isCurrentlyPlaying ? '#38bdf8' : C.durLine;
         ctx.lineWidth = 2.5;
         ctx.beginPath();
         ctx.moveTo(noteX + 12, noteY);
@@ -476,7 +525,7 @@ export class TabRenderer {
         const prevNote = i > 0 ? this.tabNotes[i - 1] : null;
         const pitchChanged = !prevNote || prevNote.midi !== note.midi;
         if (pitchChanged || isSelected) {
-          ctx.fillStyle = isSelected ? '#e0f2fe' : '#94a3b8';
+          ctx.fillStyle = isSelected ? C.noteNameSel : C.label;
           ctx.font = '10px monospace';
           ctx.fillText(note.noteName, noteX, noteY - 14);
         }
@@ -485,7 +534,7 @@ export class TabRenderer {
 
     // 信頼度が低めの音がある場合のみ凡例を出す
     if (this._sawLowConf) {
-      ctx.fillStyle = '#f59e0b';
+      ctx.fillStyle = C.legend;
       ctx.font = '10px sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';

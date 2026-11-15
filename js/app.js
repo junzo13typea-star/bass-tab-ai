@@ -359,8 +359,9 @@ class BassTabApp {
         '#tabPrintArea{display:none;}' +
         '@media print{' +
         'body>*:not(#tabPrintArea){display:none!important;}' +
+        'body::before,body::after{display:none!important;}' +
         '#tabPrintArea{display:block!important;}' +
-        '#tabPrintArea img{width:100%;}' +
+        '#tabPrintArea img{width:100%;break-inside:avoid;page-break-inside:avoid;}' +
         '@page{size:A4 landscape;margin:10mm;}' +
         '}';
       document.head.appendChild(printStyle);
@@ -402,6 +403,14 @@ class BassTabApp {
   }
 
   /**
+   * TABセクションの見出しを現在の弦数に合わせる (4弦/5弦)
+   */
+  updateTabTitle() {
+    const el = document.getElementById('tabSectionTitle');
+    if (el) el.textContent = `📜 ${this.tuning}弦エレキベース TAB譜 (同期スクロール)`;
+  }
+
+  /**
    * チューニング変更を mapper / TAB描画 / 指板 のすべてへ連動させる
    */
   setTuningUI(tuning) {
@@ -412,6 +421,7 @@ class BassTabApp {
     if (this.domExtra && this.domExtra.tuningSelect) {
       this.domExtra.tuningSelect.value = this.tuning;
     }
+    this.updateTabTitle();
     this.showToast(this.tuning === '5'
       ? '5弦チューニング: 譜面と指板にB弦行を表示しました (Low B の検出は再解析で反映されます)'
       : '4弦チューニングに戻しました (検出範囲の反映は再解析が必要です)');
@@ -676,6 +686,7 @@ class BassTabApp {
       if (this.tabRenderer) this.tabRenderer.setTuning(this.tuning);
       if (this.fretboard) this.fretboard.setTuning(this.tuning);
       if (this.domExtra && this.domExtra.tuningSelect) this.domExtra.tuningSelect.value = this.tuning;
+      this.updateTabTitle();
     }
     // 感度
     if (s.sensitivity && ['low', 'normal', 'high'].includes(s.sensitivity)) {
@@ -993,11 +1004,13 @@ class BassTabApp {
   }
 
   /**
-   * 印刷用に、全曲を4小節ごとの段 (システム) に分けてレンダラーで描いた画像を生成する。
+   * 印刷用に、全曲を4小節ごとの段 (システム) に分け、段ごとの画像を生成する。
+   * 紙で読めるよう印刷用パレット (白地・濃色) で描き、段単位で画像を分けることで
+   * ブラウザの改ページが段の途中で譜面を割らないようにする。
    * レンダラーの canvas/ctx を一時的に差し替え、終了後に必ず元の表示状態へ戻す。
-   * @returns {string|null} PNG の data URL
+   * @returns {string[]|null} 段ごとの PNG data URL の配列
    */
-  buildPrintImage() {
+  buildPrintImages() {
     const r = this.tabRenderer;
     if (!r || !r.canvas) return null;
     const dpr = window.devicePixelRatio || 1;
@@ -1009,23 +1022,18 @@ class BassTabApp {
     const systems = Math.min(120, Math.max(1, Math.ceil((r.duration - firstStart) / systemDur)));
     const stripCssW = Math.ceil(systemDur * r.pixelsPerSecond) + r.leftPadding + 8;
     const stripCssH = r.totalHeight;
-    const gapCss = 10;
-
-    const out = document.createElement('canvas');
-    out.width = Math.round(stripCssW * dpr);
-    out.height = Math.round((stripCssH * systems + gapCss * (systems - 1)) * dpr);
-    const octx = out.getContext('2d');
-    octx.fillStyle = '#0a0f1d'; // 画面のTAB背景色に合わせ、明色の譜面要素が読めるようにする
-    octx.fillRect(0, 0, out.width, out.height);
 
     const strip = document.createElement('canvas');
     const saved = {
       canvas: r.canvas, ctx: r.ctx, scrollX: r.scrollX,
-      currentTime: r.currentTime, selected: r.selectedNoteIndex, loop: r.loopEnabled
+      currentTime: r.currentTime, selected: r.selectedNoteIndex, loop: r.loopEnabled,
+      forPrint: r.forPrint
     };
+    const urls = [];
     try {
       r.canvas = strip;
       r.ctx = strip.getContext('2d');
+      r.forPrint = true; // 印刷用パレット (白地・濃色) で描く
       r.selectedNoteIndex = -1;
       r.currentTime = -1; // 再生カーソルを印刷に出さない
       r.loopEnabled = false;
@@ -1034,8 +1042,17 @@ class BassTabApp {
         strip.height = Math.round(stripCssH * dpr);
         r.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         r.scrollX = (firstStart + s * systemDur) * r.pixelsPerSecond;
+
+        const out = document.createElement('canvas');
+        out.width = Math.round(stripCssW * dpr);
+        out.height = Math.round(stripCssH * dpr);
+        const octx = out.getContext('2d');
+        octx.fillStyle = '#ffffff'; // 紙の白地
+        octx.fillRect(0, 0, out.width, out.height);
+
         r.render();
-        octx.drawImage(strip, 0, Math.round(s * (stripCssH + gapCss) * dpr));
+        octx.drawImage(strip, 0, 0);
+        urls.push(out.toDataURL('image/png'));
       }
     } finally {
       r.canvas = saved.canvas;
@@ -1044,10 +1061,11 @@ class BassTabApp {
       r.currentTime = saved.currentTime;
       r.selectedNoteIndex = saved.selected;
       r.loopEnabled = saved.loop;
+      r.forPrint = saved.forPrint;
       r.resizeCanvas();
       r.render();
     }
-    return out.toDataURL('image/png');
+    return urls;
   }
 
   /**
@@ -1059,14 +1077,14 @@ class BassTabApp {
       this.showToast('印刷するTABがありません');
       return;
     }
-    let dataUrl = null;
+    let dataUrls = null;
     try {
-      dataUrl = this.buildPrintImage();
+      dataUrls = this.buildPrintImages();
     } catch (err) {
       console.error('print image failed:', err);
     }
     const area = this.domPrintArea || document.getElementById('tabPrintArea');
-    if (!dataUrl || !area) {
+    if (!dataUrls || dataUrls.length === 0 || !area) {
       this.showToast('印刷用画像の生成に失敗しました');
       return;
     }
@@ -1077,12 +1095,15 @@ class BassTabApp {
       `<h1 style="font:700 18px sans-serif;margin:0 0 4px;">${escHtml(this.currentTrackTitle || 'BassTab')}</h1>` +
       `<p style="font:12px sans-serif;margin:0 0 10px;">BPM ${Math.round(bpm)} / ${escHtml(this.timeSignature || '4/4')} / ` +
       `${this.tuning === '5' ? '5弦' : '4弦'}ベース / ${this.currentTabNotes.length}音 / ${dateStr} (BassTab AI)</p>` +
-      `<img src="${dataUrl}" alt="TAB譜" style="width:100%;">`;
-    const img = area.querySelector('img');
+      dataUrls.map((u) =>
+        `<img src="${u}" alt="TAB譜" style="width:100%;display:block;break-inside:avoid;page-break-inside:avoid;margin:0 0 6px;">`
+      ).join('');
+    const imgs = area.querySelectorAll('img');
     let printed = false;
     const doPrint = () => { if (!printed) { printed = true; window.print(); } };
-    if (img && img.complete) setTimeout(doPrint, 50);
-    else if (img) { img.onload = doPrint; setTimeout(doPrint, 1500); }
+    const lastImg = imgs.length > 0 ? imgs[imgs.length - 1] : null;
+    if (lastImg && lastImg.complete) setTimeout(doPrint, 50);
+    else if (lastImg) { lastImg.onload = doPrint; setTimeout(doPrint, 1500); }
     else doPrint();
   }
 
