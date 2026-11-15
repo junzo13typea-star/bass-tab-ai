@@ -10,6 +10,7 @@ import { TabRenderer } from './tab/tab-renderer.js';
 import { FretboardUI } from './ui/fretboard.js';
 import { Controls } from './ui/controls.js';
 import { PRESETS } from './presets.js';
+import { loadLibraryEntries, upsertLibraryEntry, removeLibraryEntry } from './library.js';
 
 class BassTabApp {
   constructor() {
@@ -273,6 +274,8 @@ class BassTabApp {
       <button id="btnExportMidi" type="button" aria-label="MIDI書き出し" style="${BTN}">🎹 MIDI書き出し</button>
       <button id="btnExportXml" type="button" aria-label="MusicXML書き出し" style="${BTN}">🎼 MusicXML</button>
       <button id="btnPrintTab" type="button" aria-label="TABを印刷またはPDF保存" style="${BTN}">🖨 印刷/PDF</button>
+      <button id="btnSaveLibrary" type="button" aria-label="現在のTABをライブラリに保存" style="${BTN}">💾 ライブラリに保存</button>
+      <button id="btnOpenLibrary" type="button" aria-label="曲ライブラリを開く" style="${BTN}">📚 ライブラリ</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
       <button id="btnMetronome" type="button" aria-label="メトロノームの切り替え" aria-pressed="false" style="${BTN}">🥁 メトロノーム: OFF</button>
       <button id="btnCountIn" type="button" aria-label="カウントインの切り替え" aria-pressed="false" style="${BTN}">⏱ カウントイン: OFF</button>
@@ -362,6 +365,12 @@ class BassTabApp {
     });
     bar.querySelector('#btnPrintTab').addEventListener('click', () => {
       this.printTab();
+    });
+    bar.querySelector('#btnSaveLibrary').addEventListener('click', () => {
+      this.saveToLibrary();
+    });
+    bar.querySelector('#btnOpenLibrary').addEventListener('click', () => {
+      this.openLibrary();
     });
 
     // 印刷専用エリア (画面では非表示。@media print でアプリ本体を隠し、これだけ出す)
@@ -1462,6 +1471,149 @@ class BassTabApp {
       `保存済みTABを復元 • ${payload.notes.length}音符 • 推定 ${Math.round(bpm)} BPM (原曲音源なし・シンセ再生のみ)`);
     this.controls.updateTimeDisplay(0, duration);
     this.showToast('💾 前回生成したTAB譜を復元しました');
+  }
+
+  /**
+   * 現在のTABを曲ライブラリに保存する (同タイトルは差し替え)
+   */
+  saveToLibrary() {
+    if (!this.isGeneratedTab || !Array.isArray(this.currentTabNotes) || this.currentTabNotes.length === 0) {
+      this.showToast('先に音声ファイルを解析してください');
+      return;
+    }
+    const entry = {
+      id: Date.now(),
+      version: 1,
+      title: this.currentTrackTitle || '無題',
+      tempo: this.currentTempo,
+      timeSignature: this.timeSignature,
+      tuning: this.tuning,
+      sensitivity: this.sensitivity,
+      notes: this.currentTabNotes,
+      savedAt: Date.now()
+    };
+    const result = upsertLibraryEntry(localStorage, entry);
+    if (!result) {
+      this.showToast('保存できませんでした（ブラウザの保存容量が不足しています）', 4000);
+      return;
+    }
+    this.showToast(result.updated
+      ? `💾 ライブラリの「${entry.title}」を更新しました`
+      : `💾 ライブラリに「${entry.title}」を保存しました`);
+  }
+
+  /**
+   * 曲ライブラリのモーダルを開く (一覧・読み込み・削除)
+   */
+  openLibrary() {
+    this.closeLibrary();
+    const overlay = document.createElement('div');
+    overlay.id = 'libraryOverlay';
+    overlay.style.cssText = 'position:fixed; inset:0; z-index:1200; background:rgba(2,20,35,0.55); display:flex; align-items:center; justify-content:center; padding:16px;';
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#0d1526; color:#e2e8f0; border:1px solid rgba(56,189,248,0.4); border-radius:14px; max-width:520px; width:100%; max-height:80vh; overflow:auto; padding:18px;';
+    const renderList = () => {
+      const entries = loadLibraryEntries(localStorage);
+      card.innerHTML = '';
+      const head = document.createElement('div');
+      head.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;';
+      head.innerHTML = '<strong style="font-size:16px;">📚 曲ライブラリ</strong>';
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = '✕ 閉じる';
+      closeBtn.style.cssText = 'padding:6px 12px; border-radius:999px; border:1px solid rgba(255,255,255,0.3); background:rgba(255,255,255,0.06); color:#e2e8f0; cursor:pointer;';
+      closeBtn.addEventListener('click', () => this.closeLibrary());
+      head.appendChild(closeBtn);
+      card.appendChild(head);
+      if (entries.length === 0) {
+        const empty = document.createElement('p');
+        empty.style.cssText = 'font-size:13px; color:#94a3b8; line-height:1.7;';
+        empty.textContent = '保存された曲はまだありません。曲を解析したら「💾 ライブラリに保存」で残しておけます（原曲音声は保存されないため、読み込み後はシンセ再生のみになります）。';
+        card.appendChild(empty);
+        return;
+      }
+      for (const entry of entries) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; gap:8px; align-items:center; padding:9px 4px; border-top:1px solid rgba(148,163,184,0.18);';
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1; min-width:0;';
+        const d = new Date(entry.savedAt || 0);
+        const dateStr = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+        const bpm = entry.tempo && entry.tempo.bpm ? Math.round(entry.tempo.bpm) : '-';
+        info.innerHTML = `<div style="font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div><div style="font-size:12px; color:#94a3b8;">${dateStr} • ${entry.notes.length}音符 • ${bpm} BPM</div>`;
+        info.firstChild.textContent = entry.title || '無題';
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.textContent = '開く';
+        openBtn.style.cssText = 'padding:6px 14px; border-radius:999px; border:1px solid rgba(56,189,248,0.7); background:rgba(56,189,248,0.15); color:#7dd3fc; cursor:pointer;';
+        openBtn.addEventListener('click', () => { this.loadLibraryEntry(entry.id); this.closeLibrary(); });
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.textContent = '削除';
+        delBtn.style.cssText = 'padding:6px 12px; border-radius:999px; border:1px solid rgba(255,255,255,0.25); background:transparent; color:#94a3b8; cursor:pointer;';
+        delBtn.addEventListener('click', () => {
+          if (removeLibraryEntry(localStorage, entry.id)) {
+            this.showToast(`ライブラリから「${entry.title || '無題'}」を削除しました`);
+            renderList();
+          }
+        });
+        row.appendChild(info);
+        row.appendChild(openBtn);
+        row.appendChild(delBtn);
+        card.appendChild(row);
+      }
+    };
+    renderList();
+    overlay.appendChild(card);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) this.closeLibrary(); });
+    document.body.appendChild(overlay);
+    this.domLibrary = overlay;
+  }
+
+  closeLibrary() {
+    if (this.domLibrary) { this.domLibrary.remove(); this.domLibrary = null; }
+  }
+
+  /**
+   * ライブラリの曲を読み込む (復元と同じ手順。原曲音源はないためシンセ再生のみ)
+   */
+  loadLibraryEntry(id) {
+    const entry = loadLibraryEntries(localStorage).find(e => e.id === id);
+    if (!entry) { this.showToast('その曲はライブラリに見つかりませんでした'); return; }
+    this.player.stop();
+    this.hideTabNotice();
+    this.currentTrackTitle = entry.title || 'ライブラリの曲';
+    this.currentAudioBuffer = null;
+    this.lastFile = null;
+    this.currentTabNotes = entry.notes;
+    this.currentTempo = entry.tempo || null;
+    this.currentRawNotes = null;
+    this.estimatedTempo = entry.tempo || null;
+    if (this.domExtra && this.domExtra.bpmInput && entry.tempo) this.domExtra.bpmInput.value = entry.tempo.bpm;
+    this.isGeneratedTab = true;
+    if (entry.tuning) {
+      this.tuning = entry.tuning === '5' ? '5' : '4';
+      this.mapper.setTuning(this.tuning);
+      if (this.tabRenderer) this.tabRenderer.setTuning(this.tuning);
+      if (this.fretboard) this.fretboard.setTuning(this.tuning);
+      if (this.domExtra && this.domExtra.tuningSelect) this.domExtra.tuningSelect.value = this.tuning;
+    }
+    if (entry.sensitivity) {
+      this.sensitivity = entry.sensitivity;
+      if (this.domExtra && this.domExtra.sensSelect) this.domExtra.sensSelect.value = entry.sensitivity;
+    }
+    const lastNote = entry.notes[entry.notes.length - 1];
+    const duration = lastNote ? lastNote.time + lastNote.duration + 1.5 : 10;
+    this.player.loadTrack(null, this.currentTabNotes);
+    const bpm = (this.currentTempo && this.currentTempo.bpm) || 120;
+    const beatOffset = (this.currentTempo && this.currentTempo.offset) || 0;
+    this.tabRenderer.setTabNotes(this.currentTabNotes, duration, bpm, beatOffset);
+    this.setTimeSignatureUI(entry.timeSignature || '4/4');
+    this.updateTrackInfo(this.currentTrackTitle,
+      `ライブラリから読み込み • ${entry.notes.length}音符 • 推定 ${Math.round(bpm)} BPM (原曲音源なし・シンセ再生のみ)`);
+    this.controls.updateTimeDisplay(0, duration);
+    this.saveGeneratedTab();
+    this.showToast(`📚 「${this.currentTrackTitle}」を読み込みました`);
   }
 
   loadPreset(presetId) {
