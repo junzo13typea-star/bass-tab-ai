@@ -11,6 +11,7 @@ import { FretboardUI } from './ui/fretboard.js';
 import { Controls } from './ui/controls.js';
 import { PRESETS } from './presets.js';
 import { loadLibraryEntries, upsertLibraryEntry, removeLibraryEntry } from './library.js';
+import { MicRecorder, RECORD_MAX_SEC } from './recorder.js';
 
 class BassTabApp {
   constructor() {
@@ -276,6 +277,7 @@ class BassTabApp {
       <button id="btnPrintTab" type="button" aria-label="TABを印刷またはPDF保存" style="${BTN}">🖨 印刷/PDF</button>
       <button id="btnSaveLibrary" type="button" aria-label="現在のTABをライブラリに保存" style="${BTN}">💾 ライブラリに保存</button>
       <button id="btnOpenLibrary" type="button" aria-label="曲ライブラリを開く" style="${BTN}">📚 ライブラリ</button>
+      <button id="btnRecord" type="button" aria-label="マイクで録音して採譜" aria-pressed="false" style="${BTN}">🎤 録音して採譜</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
       <button id="btnMetronome" type="button" aria-label="メトロノームの切り替え" aria-pressed="false" style="${BTN}">🥁 メトロノーム: OFF</button>
       <button id="btnCountIn" type="button" aria-label="カウントインの切り替え" aria-pressed="false" style="${BTN}">⏱ カウントイン: OFF</button>
@@ -371,6 +373,10 @@ class BassTabApp {
     });
     bar.querySelector('#btnOpenLibrary').addEventListener('click', () => {
       this.openLibrary();
+    });
+    this.domExtra.recordBtn = bar.querySelector('#btnRecord');
+    this.domExtra.recordBtn.addEventListener('click', () => {
+      this.toggleRecording();
     });
 
     // 印刷専用エリア (画面では非表示。@media print でアプリ本体を隠し、これだけ出す)
@@ -1614,6 +1620,50 @@ class BassTabApp {
     this.controls.updateTimeDisplay(0, duration);
     this.saveGeneratedTab();
     this.showToast(`📚 「${this.currentTrackTitle}」を読み込みました`);
+  }
+
+  /**
+   * マイク録音の開始/停止トグル。停止したら録音をそのまま解析フローへ渡す。
+   * 録音上限 (RECORD_MAX_SEC) に達したら自動で停止して採譜する。
+   */
+  async toggleRecording() {
+    if (!this.micRecorder) this.micRecorder = new MicRecorder();
+    const rec = this.micRecorder;
+    if (rec.recording) { await this.finishRecording(); return; }
+    if (!MicRecorder.isSupported()) {
+      this.showToast('このブラウザはマイク録音に対応していません', 4000);
+      return;
+    }
+    try {
+      await rec.start(this.analyzer.getAudioContext());
+    } catch (e) {
+      console.warn('マイク録音を開始できませんでした:', e);
+      this.showToast('マイクを使えませんでした。ブラウザのマイク許可を確認してください', 4500);
+      return;
+    }
+    this.player.stop();
+    const btn = this.domExtra && this.domExtra.recordBtn;
+    if (btn) { btn.textContent = '⏹ 録音を止めて採譜 (0:00)'; btn.setAttribute('aria-pressed', 'true'); }
+    this.showToast('🔴 録音中… 演奏してください（もう一度押すと止めて採譜します）', 4000);
+    this.recordTimer = setInterval(() => {
+      const sec = Math.floor(rec.elapsedSec());
+      if (btn) btn.textContent = `⏹ 録音を止めて採譜 (${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')})`;
+      if (sec >= RECORD_MAX_SEC) this.finishRecording();
+    }, 500);
+  }
+
+  async finishRecording() {
+    const rec = this.micRecorder;
+    if (!rec) return;
+    if (this.recordTimer) { clearInterval(this.recordTimer); this.recordTimer = null; }
+    const btn = this.domExtra && this.domExtra.recordBtn;
+    if (btn) { btn.textContent = '🎤 録音して採譜'; btn.setAttribute('aria-pressed', 'false'); }
+    const file = await rec.stop();
+    if (!file || file.size === 0) {
+      this.showToast('録音データが空でした');
+      return;
+    }
+    this.processUploadedFile(file);
   }
 
   loadPreset(presetId) {

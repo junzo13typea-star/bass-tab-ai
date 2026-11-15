@@ -1,11 +1,12 @@
 // BassTab AI - Service Worker
-const CACHE_NAME = 'basstab-ai-v15';
+const CACHE_NAME = 'basstab-ai-v16';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './css/style.css',
   './js/app.js',
   './js/library.js',
+  './js/recorder.js',
   './js/presets.js',
   './js/audio/analyzer.js',
   './js/audio/bass-synth.js',
