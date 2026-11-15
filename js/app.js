@@ -12,6 +12,7 @@ import { Controls } from './ui/controls.js';
 import { PRESETS } from './presets.js';
 import { loadLibraryEntries, upsertLibraryEntry, removeLibraryEntry } from './library.js';
 import { MicRecorder, RECORD_MAX_SEC } from './recorder.js';
+import { registerServiceWorker } from './sw-update.js';
 
 class BassTabApp {
   constructor() {
@@ -127,11 +128,10 @@ class BassTabApp {
     // 6.6 初回のみ使い方モーダルを自動表示する
     this.maybeShowFirstRunHelp();
 
-    // 7. PWA Service Worker 登録
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./service-worker.js')
-        .catch(err => console.log('SW registration failed:', err));
-    }
+    // 7. PWA Service Worker 登録 (新バージョンがあれば通知し、自動で再読み込みして更新)
+    registerServiceWorker(() => {
+      this.showToast('🚀 新バージョンが利用可能です。更新中...', 4000);
+    });
   }
 
   initControls() {
