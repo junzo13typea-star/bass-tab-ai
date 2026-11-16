@@ -113,17 +113,22 @@ export class Controls {
       });
     });
 
+    // ペア取り込み (原曲＋ベースステム) のため、ファイル選択でも2つまで選べるようにする
+    // (index.html は編集しない方針なので multiple はここで付ける)
+    fileInput.multiple = true;
+
     dropZone.addEventListener('drop', (e) => {
       const files = e.dataTransfer.files;
       if (files && files.length > 0) {
-        this.cb.onFileSelected(files[0]);
+        // ペア取り込み対応: 選択されたファイル一式を渡し、原曲/ステムの振り分けはアプリ側で行う
+        this.cb.onFileSelected(files);
       }
     });
 
     fileInput.addEventListener('change', (e) => {
       const files = e.target.files;
       if (files && files.length > 0) {
-        this.cb.onFileSelected(files[0]);
+        this.cb.onFileSelected(files);
       }
       // 同じファイルを再選択しても change が発火するようリセットする
       e.target.value = '';

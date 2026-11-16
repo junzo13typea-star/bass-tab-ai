@@ -515,18 +515,31 @@ export class AudioAnalyzer {
           }
           c.P = bestP; c.score = bestFit.score; c.phase = bestFit.phase;
         }
+        // 安定化 (A0): 各候補にノート投票の窓付き支持 (scoreNear) を prior として付け、
+        // コムスコアと組み合わせた combined を算出する。投票の「分布」は音符集合の
+        // 微小変化に対して安定だが、その最大値 (勝者) は僅差で反転しうるため、
+        // 勝者そのものではなく分布全体を証拠として使う。
+        const maxSup = Math.max(...combCandidates.map(c => scoreNear(c.P)));
+        for (const c of combCandidates) {
+          c.sup = scoreNear(c.P);
+          c.combined = c.score * (1 + 0.25 * (maxSup > 0 ? c.sup / maxSup : 0));
+        }
         combCandidates.sort((a, b) => b.score - a.score);
         const bestScore = combCandidates[0].score;
         // 採用規則: スコアが最良の92%以内にある候補を「合格」とし、
         // ノート投票の勝者 (倍テンポ補正などの音楽的 prior を含む) が合格内ならそれを優先。
-        // 合格内に投票勝者が無い場合 (実音源で投票が外れた場合) はコムスコア最良を採用し、
-        // スコアが互角 (98%以上) なら遅い周期 (長周期側) を優先する。
+        // 合格内に投票勝者が無い場合 (投票自体が反転して外れた場合) は、コムスコアが
+        // 最良の85%以上ある候補の中から combined が最大のものを採用する。
+        // 従来はこの分岐でコムスコア単独の最大値を採っており、ノート側の支持が
+        // ほぼ無い見せかけのピーク (例: 172BPMの曲で214.7BPM) に反転する事故があった。
+        // combined が互角 (99%以上) なら遅い周期 (長周期側) を優先する。
         const eligible = combCandidates.filter(c => c.score >= bestScore * 0.92);
         let chosen = eligible.find(c => c.isNoteWinner);
         if (!chosen) {
-          chosen = eligible[0];
-          for (const c of eligible) {
-            if (c.score >= chosen.score * 0.98 && c.P > chosen.P) chosen = c;
+          const pool = combCandidates.filter(c => c.score >= bestScore * 0.85);
+          chosen = pool.reduce((a, b) => (b.combined > a.combined ? b : a));
+          for (const c of pool) {
+            if (c.combined >= chosen.combined * 0.99 && c.P > chosen.P) chosen = c;
           }
         }
         beatLen = chosen.P;
@@ -551,8 +564,8 @@ export class AudioAnalyzer {
     // 実音源 (特にフルミックス) では検出ノートに他楽器の漏れや細切れの誤検出が混ざり、
     // IOI投票の最大ピークが正しい周期にならないことがある (例: 188BPMの曲で150BPMを掴む)。
     // そこで投票の上位ピークを複数候補として保持し、それぞれを実グリッドへ精密化したうえで
-    // 「16分グリッドの40ms以内に収まる音の割合」が最大の候補を採用する。
-    // 適合率が互角の候補 (オクターブ関係など) は投票支持の高い方を優先する。
+    // 「16分グリッドの40ms以内に収まる音の割合」が互角の候補の中から、
+    // 投票の窓付き支持が最大の候補を採用する。
 
     // 候補グリッドに対する位相 (円周統計) と整合スコア
     const gridFit = (candBeatLen) => {
@@ -644,8 +657,10 @@ export class AudioAnalyzer {
       const sortedPeaks = [...smoothVotes.entries()].sort((a, b) => b[1] - a[1]);
       const picked = [];
       for (const [key] of sortedPeaks) {
-        if (picked.every(p => Math.abs(p - key) > 8)) picked.push(key);
-        if (picked.length >= 4) break;
+        // 間隔条件が広すぎると僅差の隣接ピーク (例: 0.40と0.36) に正解の種が
+        // 押し出されて候補に残らないため、間隔を詰めて採取数を増やす (A0)
+        if (picked.every(p => Math.abs(p - key) > 5)) picked.push(key);
+        if (picked.length >= 6) break;
       }
       for (const key of picked) {
         let ws = 0, vs = 0;
@@ -657,16 +672,32 @@ export class AudioAnalyzer {
     }
 
     let results = [...candidateMap.values()].map(c => ({ ...c, ...refineCandidate(c.beatLen) }));
+    // 安定化 (A0): 最終順位付けには単一ビンの最大値 (voteScore) ではなく、
+    // 候補周期の近傍に集まった投票の合計 (窓付き支持 supScore) を使う。
+    // 単一ビンは音符集合の微小変化で反転しやすいが、窓付き合計は安定する。
+    for (const r of results) r.supScore = scoreNear(r.beatLen);
+    // 近接候補の統合 (A0): 種を密に採取すると、同一テンポの「肩」に当たる候補が
+    // 精密化で僅かにずれた別候補として残り、支持を奪い合って勝者が揺れる。
+    // 0.025秒以内の候補は同一仮説として、適合率×支持が最大のものに畳む。
+    results.sort((a, b) => (b.frac40 * b.supScore) - (a.frac40 * a.supScore));
+    const mergedResults = [];
+    for (const r of results) {
+      if (mergedResults.every(m => Math.abs(m.beatLen - r.beatLen) > 0.025)) mergedResults.push(r);
+    }
+    results = mergedResults;
+    // 帯域は広めに取る (A0): frac40 はグリッドが細かい=速い候補ほど飽和しやすく、
+    // 狭い帯域の境界で正解候補を落とすと、速い見せかけ候補だけが残って反転する。
+    // 最終決定は supScore の仲裁に委ねる。
     const maxFrac = Math.max(...results.map(r => r.frac40));
-    results = results.filter(r => r.frac40 >= maxFrac - 0.03);
+    results = results.filter(r => r.frac40 >= maxFrac - 0.10);
     // オクターブ対策: 適合率が互角の候補同士が約2:1の関係にある場合、
     // 遅い側に一定の投票支持 (>=35%) があれば速い側 (倍テンポ誤認) を落とす
     results = results.filter(r => !results.some(o =>
       o !== r &&
       Math.abs(o.beatLen - r.beatLen * 2) <= r.beatLen * 0.10 &&
-      o.voteScore >= r.voteScore * 0.35
+      o.supScore >= r.supScore * 0.35
     ));
-    results.sort((a, b) => b.voteScore - a.voteScore);
+    results.sort((a, b) => b.supScore - a.supScore);
     beatLen = results[0].beatLen;
     let offset = results[0].offset8;
     const step8 = beatLen / 2;

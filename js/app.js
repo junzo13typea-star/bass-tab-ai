@@ -14,7 +14,47 @@ import { loadLibraryEntries, upsertLibraryEntry, removeLibraryEntry } from './li
 import { MicRecorder, RECORD_MAX_SEC } from './recorder.js';
 import { registerServiceWorker } from './sw-update.js';
 
-class BassTabApp {
+/**
+ * ペア取り込み (原曲＋ベースステム) のファイル名がステムらしいか判定する。
+ * ファイル名に bass / stem / ベース を含むものをステム候補とする。
+ */
+export function isStemLikeName(name) {
+  return /bass|stem|ベース/i.test(name || '');
+}
+
+/**
+ * 取り込まれたファイル一式から { original, stem } の割り当てを決める (純関数)。
+ * - 1ファイル: そのまま原曲のみ (stem は null)
+ * - 2ファイル: 片方だけ名前がステムらしい場合はそちらをステムにする。
+ *   両方/どちらでもない場合は並び順どおり [0]=原曲, [1]=ステム とし、
+ *   ペア表示でユーザーに見えるようにする (黙って逆にしない)。
+ * - 3つ以上: 先頭2つだけを使う。
+ */
+export function resolvePairFiles(files) {
+  const list = Array.from(files || []).filter(Boolean);
+  if (list.length === 0) return null;
+  if (list.length === 1) return { original: list[0], stem: null };
+  const a = list[0];
+  const b = list[1];
+  const aStem = isStemLikeName(a.name);
+  const bStem = isStemLikeName(b.name);
+  if (aStem && !bStem) return { original: b, stem: a };
+  return { original: a, stem: b };
+}
+
+/**
+ * 原曲とステムの長さのずれ (秒)。0.5秒を超えたら警告対象。
+ */
+export function pairDurationDiffSec(originalDuration, stemDuration) {
+  if (!isFinite(originalDuration) || !isFinite(stemDuration)) return 0;
+  return Math.abs(originalDuration - stemDuration);
+}
+
+export function shouldWarnPairMismatch(originalDuration, stemDuration) {
+  return pairDurationDiffSec(originalDuration, stemDuration) > 0.5;
+}
+
+export class BassTabApp {
   constructor() {
     this.analyzer = new AudioAnalyzer();
     this.synth = new BassSynth();
@@ -37,7 +77,7 @@ class BassTabApp {
     this.sensitivity = 'normal';  // 検出感度 ('low'|'normal'|'high')
     this.tuning = '4';            // チューニング ('4'|'5')
     this.timeSignature = '4/4';   // 拍子 ('4/4'|'3/4'|'6/8')
-    this.lastFile = null;         // 再解析用に保持する最後のアップロードファイル
+    this.lastPair = null;         // 再解析用に保持する最後の { original, stem } ペア (stem は null 可)
     this.isGeneratedTab = false;  // 解析で生成したTABかどうか (自動保存の対象)
     this.domExtra = null;         // 動的追加コントロールへの参照
     this.currentRawNotes = null;  // 再量子化用に保持する検出直後のノート列
@@ -219,8 +259,10 @@ class BassTabApp {
       onSelectPreset: (presetId) => {
         this.loadPreset(presetId);
       },
-      onFileSelected: (file) => {
-        this.processUploadedFile(file);
+      onFileSelected: (files) => {
+        // 1ファイルなら従来どおり単体、2ファイルならペア取り込みとして振り分ける
+        const pair = resolvePairFiles(files);
+        if (pair) this.processUploadedFile(pair.original, pair.stem);
       }
     });
   }
@@ -278,6 +320,7 @@ class BassTabApp {
       <button id="btnSaveLibrary" type="button" aria-label="現在のTABをライブラリに保存" style="${BTN}">💾 ライブラリに保存</button>
       <button id="btnOpenLibrary" type="button" aria-label="曲ライブラリを開く" style="${BTN}">📚 ライブラリ</button>
       <button id="btnRecord" type="button" aria-label="マイクで録音して採譜" aria-pressed="false" style="${BTN}">🎤 録音して採譜</button>
+      <button id="btnAddStem" type="button" aria-label="ベースステムを追加" style="${BTN} display:none;">🎚 ベースステムを追加</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
       <button id="btnMetronome" type="button" aria-label="メトロノームの切り替え" aria-pressed="false" style="${BTN}">🥁 メトロノーム: OFF</button>
       <button id="btnCountIn" type="button" aria-label="カウントインの切り替え" aria-pressed="false" style="${BTN}">⏱ カウントイン: OFF</button>
@@ -350,11 +393,34 @@ class BassTabApp {
       this.saveSettings();
     });
     bar.querySelector('#btnReanalyze').addEventListener('click', () => {
-      if (this.lastFile) {
-        this.processUploadedFile(this.lastFile);
+      if (this.lastPair) {
+        this.processUploadedFile(this.lastPair.original, this.lastPair.stem);
       } else {
         this.showToast('先に音声ファイルを読み込んでください');
       }
+    });
+    // ペア取り込み: 原曲を読み込んだあとからベースステムを追加/変更するボタン。
+    // ファイル入力は index.html を編集しない方針のため、ここで動的に生成する。
+    this.domExtra.stemBtn = bar.querySelector('#btnAddStem');
+    const stemInput = document.createElement('input');
+    stemInput.type = 'file';
+    stemInput.id = 'stemFileInput';
+    stemInput.accept = 'audio/*,.mp3,.wav,.m4a,.ogg,.flac';
+    stemInput.style.display = 'none';
+    document.body.appendChild(stemInput);
+    this.domExtra.stemInput = stemInput;
+    this.domExtra.stemBtn.addEventListener('click', () => {
+      if (!this.lastPair || !this.lastPair.original) {
+        this.showToast('先に原曲を読み込んでください');
+        return;
+      }
+      stemInput.click();
+    });
+    stemInput.addEventListener('change', (e) => {
+      const stemFile = e.target.files && e.target.files[0];
+      // 同じファイルを再選択しても change が発火するようリセットする
+      e.target.value = '';
+      if (stemFile) this.addStemFile(stemFile);
     });
     bar.querySelector('#btnExportTab').addEventListener('click', () => {
       this.exportTextTab();
@@ -1590,7 +1656,8 @@ class BassTabApp {
     this.hideTabNotice();
     this.currentTrackTitle = entry.title || 'ライブラリの曲';
     this.currentAudioBuffer = null;
-    this.lastFile = null;
+    this.lastPair = null;
+    this.updateStemButton();
     this.currentTabNotes = entry.notes;
     this.currentTempo = entry.tempo || null;
     this.currentRawNotes = null;
@@ -1697,11 +1764,49 @@ class BassTabApp {
     this.showToast(`🎵 プリセット「${preset.title.split(' ')[1]}」をロードしました`);
   }
 
-  async processUploadedFile(file) {
+  /**
+   * ペア表示用の注記。ステムがペアになっている間だけ返す。
+   */
+  pairMetaNote() {
+    return (this.lastPair && this.lastPair.stem) ? ' • ペア：ステム使用中' : '';
+  }
+
+  /**
+   * 「ベースステムを追加」ボタンの表示/ラベルを現在のペア状態に合わせる。
+   * 原曲が読み込まれている間だけ出し、ステム設定済みなら「変更」に切り替える。
+   */
+  updateStemButton() {
+    const btn = this.domExtra && this.domExtra.stemBtn;
+    if (!btn) return;
+    const hasOriginal = !!(this.lastPair && this.lastPair.original);
+    btn.style.display = hasOriginal ? '' : 'none';
+    btn.textContent = (this.lastPair && this.lastPair.stem)
+      ? '🎚 ステムを変更'
+      : '🎚 ベースステムを追加';
+  }
+
+  /**
+   * 読み込み済みの原曲にベースステムを後付けし、ペアとして再解析する。
+   */
+  addStemFile(stemFile) {
+    if (!stemFile) return;
+    if (!this.lastPair || !this.lastPair.original) {
+      this.showToast('先に原曲を読み込んでください');
+      return;
+    }
+    return this.processUploadedFile(this.lastPair.original, stemFile);
+  }
+
+  /**
+   * 音声ファイルを取り込んで解析する。stemFile があればペア取り込み:
+   * 再生・長さ表示は原曲、音符検出はステム側で行う。
+   */
+  async processUploadedFile(file, stemFile = null) {
     if (!file) return;
     this.player.stop();
     this.hideTabNotice();
-    this.lastFile = file; // 感度・チューニング変更後の再解析用
+    this.lastPair = { original: file, stem: stemFile || null }; // 感度・チューニング変更後の再解析用
+    this.updateStemButton();
 
     const fileName = file.name.replace(/\.[^/.]+$/, "");
     this.currentTrackTitle = fileName;
@@ -1717,14 +1822,25 @@ class BassTabApp {
     this.controls.showProgress(0.05, 'オーディオファイルをデコード中...', () => { cancelToken.cancelled = true; });
 
     try {
-      // 1. デコード
+      // 1. デコード (再生・表示用は原曲。解析用はステムがあればステム)
       const audioBuffer = await this.analyzer.decodeAudio(file);
       this.currentAudioBuffer = audioBuffer;
       throwIfCancelled();
 
-      // 2. ベース帯域抽出
+      let analysisBuffer = audioBuffer;
+      if (stemFile) {
+        this.controls.showProgress(0.15, 'ベースステムをデコード中...');
+        analysisBuffer = await this.analyzer.decodeAudio(stemFile);
+        throwIfCancelled();
+        // 長さのずれが大きいペアは別曲の可能性もあるため警告だけ出して続行する
+        if (shouldWarnPairMismatch(audioBuffer.duration, analysisBuffer.duration)) {
+          this.showToast(`⚠️ 原曲とステムの長さが約${pairDurationDiffSec(audioBuffer.duration, analysisBuffer.duration).toFixed(1)}秒ずれています。このまま解析します`, 5000);
+        }
+      }
+
+      // 2. ベース帯域抽出 (解析用バッファから。単体時もステム時も同じ経路を通す)
       this.controls.showProgress(0.25, 'ベース周波数帯域を抽出中...');
-      const bassBuffer = await this.analyzer.filterBassBand(audioBuffer);
+      const bassBuffer = await this.analyzer.filterBassBand(analysisBuffer);
       throwIfCancelled();
 
       // 3. ピッチ＆ノート検出 (感度・チューニング設定を反映)
@@ -1750,7 +1866,7 @@ class BassTabApp {
         this.isGeneratedTab = false;
         this.player.loadTrack(audioBuffer, []);
         this.tabRenderer.setTabNotes([], audioBuffer.duration, tempo.bpm, tempo.offset);
-        this.updateTrackInfo(fileName, 'AI自動採譜 • 検出 0 件');
+        this.updateTrackInfo(fileName, `AI自動採譜 • 検出 0 件${this.pairMetaNote()}`);
         this.controls.updateTimeDisplay(0, audioBuffer.duration);
         this.controls.hideProgress();
         this.showTabNotice({
@@ -1767,7 +1883,7 @@ class BassTabApp {
                 this.sensitivity = 'high';
                 if (this.domExtra && this.domExtra.sensSelect) this.domExtra.sensSelect.value = 'high';
                 this.saveSettings();
-                if (this.lastFile) this.processUploadedFile(this.lastFile);
+                if (this.lastPair) this.processUploadedFile(this.lastPair.original, this.lastPair.stem);
               }
             },
             { label: '閉じる', onClick: () => this.hideTabNotice() }
@@ -1785,7 +1901,7 @@ class BassTabApp {
       this.isGeneratedTab = true;
       this.saveGeneratedTab();
 
-      this.updateTrackInfo(fileName, `AI自動採譜 • ${tabNotes.length}音符検出 • 推定 ${Math.round(tempo.bpm)} BPM • 長さ ${this.controls.formatTime(audioBuffer.duration)}`);
+      this.updateTrackInfo(fileName, `AI自動採譜 • ${tabNotes.length}音符検出 • 推定 ${Math.round(tempo.bpm)} BPM • 長さ ${this.controls.formatTime(audioBuffer.duration)}${this.pairMetaNote()}`);
       this.controls.updateTimeDisplay(0, audioBuffer.duration);
 
       this.controls.hideProgress();
@@ -1831,7 +1947,7 @@ class BassTabApp {
     this.tabRenderer.setTabNotes(tabNotes, duration, bpm, offset);
     if (this.isGeneratedTab) this.saveGeneratedTab();
     this.updateTrackInfo(this.currentTrackTitle,
-      `AI自動採譜 • ${tabNotes.length}音符検出 • BPM ${Math.round(bpm * 10) / 10}${isReset ? ' (推定)' : ' (手動)'} • 長さ ${this.controls.formatTime(duration)}`);
+      `AI自動採譜 • ${tabNotes.length}音符検出 • BPM ${Math.round(bpm * 10) / 10}${isReset ? ' (推定)' : ' (手動)'} • 長さ ${this.controls.formatTime(duration)}${this.pairMetaNote()}`);
     this.showToast(isReset ? `推定BPM ${Math.round(bpm * 10) / 10} に戻しました` : `BPMを ${Math.round(bpm * 10) / 10} に変更しました`);
   }
 
