@@ -74,6 +74,39 @@ export function partitionLowConfidenceNotes(notes, threshold = LOW_CONFIDENCE_TH
   return { kept, removed };
 }
 
+/**
+ * 音符列を8分音符のグリッドに整える (純関数)。
+ * - 音符は「発音が含まれる8分スロット」に属し、持続する範囲のスロットを覆う。
+ *   スロットごとに1音を置くため、長い音は8分ごとの打ち直しになる
+ * - 同じスロットに複数の音符が重なる場合は、スロットとの重なりが最も大きい
+ *   音符を採用し、同点なら開始が早い方を採る
+ * - 採用されなかった音符 (16分の断片など) は消える
+ */
+export function snapNotesToEighthGrid(notes, bpm, offset = 0) {
+  if (!Array.isArray(notes) || !isFinite(bpm) || bpm <= 0) return [];
+  const eighth = 60 / bpm / 2;
+  const base = isFinite(offset) ? offset : 0;
+  const slots = new Map();
+  for (const n of notes) {
+    if (!n || !isFinite(n.time)) continue;
+    const dur = isFinite(n.duration) && n.duration > 0 ? n.duration : eighth;
+    const startIdx = Math.max(0, Math.floor((n.time - base) / eighth + 1e-6));
+    let endIdx = Math.round((n.time + dur - base) / eighth);
+    if (endIdx <= startIdx) endIdx = startIdx + 1;
+    for (let i = startIdx; i < endIdx; i++) {
+      const slotStart = base + i * eighth;
+      const overlap = Math.min(n.time + dur, slotStart + eighth) - Math.max(n.time, slotStart);
+      const cur = slots.get(i);
+      if (!cur || overlap > cur.overlap + 1e-9 || (Math.abs(overlap - cur.overlap) <= 1e-9 && n.time < cur.note.time)) {
+        slots.set(i, { note: n, overlap });
+      }
+    }
+  }
+  return [...slots.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([i, { note }]) => ({ ...note, time: base + i * eighth, duration: eighth }));
+}
+
 export class BassTabApp {
   constructor() {
     this.analyzer = new AudioAnalyzer();
@@ -342,6 +375,7 @@ export class BassTabApp {
       <button id="btnRecord" type="button" aria-label="マイクで録音して採譜" aria-pressed="false" style="${BTN}">🎤 録音して採譜</button>
       <button id="btnAddStem" type="button" aria-label="ベースステムを追加" style="${BTN} display:none;">🎚 ベースステムを追加</button>
       <button id="btnDeleteLowConf" type="button" aria-label="信頼度が低めの音符をまとめて削除" style="${BTN}">🧹 低信頼を一括削除</button>
+      <button id="btnSnapEighth" type="button" aria-label="音符を8ビートのグリッドに整える" style="${BTN}">🎯 8ビートに整える</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
       <button id="btnMetronome" type="button" aria-label="メトロノームの切り替え" aria-pressed="false" style="${BTN}">🥁 メトロノーム: OFF</button>
       <button id="btnCountIn" type="button" aria-label="カウントインの切り替え" aria-pressed="false" style="${BTN}">⏱ カウントイン: OFF</button>
@@ -444,6 +478,7 @@ export class BassTabApp {
       if (stemFile) this.addStemFile(stemFile);
     });
     bar.querySelector('#btnDeleteLowConf').addEventListener('click', () => this.deleteLowConfidenceNotes());
+    bar.querySelector('#btnSnapEighth').addEventListener('click', () => this.snapToEighthGrid());
     bar.querySelector('#btnExportTab').addEventListener('click', () => {
       this.exportTextTab();
     });
@@ -746,7 +781,7 @@ export class BassTabApp {
       <div style="font-weight:700; margin-top:10px;">3. 譜面の操作</div>
       <div>譜面をドラッグすると左右にスクロールできます。クリックでその位置へジャンプ (シーク) します。「自動スクロール」をOFFにすると、再生中も譜面が追従しません。譜面の上の細いバーからも位置移動できます。</div>
       <div style="font-weight:700; margin-top:10px;">4. 音符の編集</div>
-      <div>譜面の音符をクリックすると選択でき、編集バーで半音の上げ下げ・16分単位の移動・追加・弦変更・削除ができます。半音を変えると運指 (弦とフレット) は自動で最も近い位置に直ります。キー操作: ←→ 移動 (Shiftで4つ分) / ↑↓ 半音 / Insert 追加 / S 弦変更 / Delete 削除。「🧹 低信頼を一括削除」は琥珀色の音符 (信頼度が低め) をまとめて消します。件数を確認してから削除します。</div>
+      <div>譜面の音符をクリックすると選択でき、編集バーで半音の上げ下げ・16分単位の移動・追加・弦変更・削除ができます。半音を変えると運指 (弦とフレット) は自動で最も近い位置に直ります。キー操作: ←→ 移動 (Shiftで4つ分) / ↑↓ 半音 / Insert 追加 / S 弦変更 / Delete 削除。「🧹 低信頼を一括削除」は琥珀色の音符 (信頼度が低め) をまとめて消します。件数を確認してから削除します。「🎯 8ビートに整える」は音符を8分音符のグリッドに吸着させ、長い音は8分ごとの打ち直しにして、まっすぐな8ビートの譜面に直します。</div>
       <div style="font-weight:700; margin-top:10px;">5. 指板</div>
       <div>下の指板はタップするとその音が鳴ります。再生中は今弾くべきフレットが光ります。</div>
       <div style="font-weight:700; margin-top:10px;">6. 練習サポート</div>
@@ -979,6 +1014,34 @@ export class BassTabApp {
     this.syncNotesAfterEdit();
     this.updateEditBar();
     this.showToast(`低信頼の音符を ${removed.length} 件削除しました`);
+  }
+
+  /**
+   * 現在のTABを8ビート (8分音符) のグリッドに整える。
+   * 長い音は8分ごとの打ち直しになり、16分位置の音は最寄りの8分に寄る。
+   */
+  snapToEighthGrid() {
+    if (!this.currentTabNotes || this.currentTabNotes.length === 0) {
+      this.showToast('先に音声ファイルを読み込んでください');
+      return;
+    }
+    const { bpm, offset } = this.editGridTempo();
+    const before = this.currentTabNotes;
+    const snapped = snapNotesToEighthGrid(before, bpm, offset);
+    const unchanged = snapped.length === before.length && snapped.every((n, i) =>
+      Math.abs(n.time - before[i].time) < 0.001 && Math.abs(n.duration - before[i].duration) < 0.001 && n.midi === before[i].midi);
+    if (unchanged) {
+      this.showToast('すでに8ビートに整っています');
+      return;
+    }
+    const ok = window.confirm(`音符を8ビート (8分音符) のグリッドに整えます。${before.length}音 → ${snapped.length}音になります。\n16分音符や細かいニュアンスは失われます。この操作は取り消せません。`);
+    if (!ok) return;
+    this.currentTabNotes = snapped;
+    this.selectedNoteIndex = -1;
+    if (this.tabRenderer) this.tabRenderer.setSelectedNote(-1);
+    this.syncNotesAfterEdit();
+    this.updateEditBar();
+    this.showToast(`8ビートに整えました (${before.length}音 → ${snapped.length}音)`);
   }
 
   // 編集操作の基準テンポ (グリッド計算用)。未解析時はレンダラーのBPMで代替する
