@@ -54,6 +54,26 @@ export function shouldWarnPairMismatch(originalDuration, stemDuration) {
   return pairDurationDiffSec(originalDuration, stemDuration) > 0.5;
 }
 
+/**
+ * 低信頼のしきい値。TAB描画側 (tab-renderer.js) の琥珀色判定
+ * (confidence < 0.8) と必ず一致させること。
+ */
+export const LOW_CONFIDENCE_THRESHOLD = 0.8;
+
+/**
+ * 低信頼の音符 (琥珀色) とそれ以外に仕分ける (純関数)。
+ * confidence が数値でない音符は判定できないため残す側に入れる。
+ */
+export function partitionLowConfidenceNotes(notes, threshold = LOW_CONFIDENCE_THRESHOLD) {
+  const kept = [];
+  const removed = [];
+  for (const n of notes || []) {
+    if (n && typeof n.confidence === 'number' && n.confidence < threshold) removed.push(n);
+    else kept.push(n);
+  }
+  return { kept, removed };
+}
+
 export class BassTabApp {
   constructor() {
     this.analyzer = new AudioAnalyzer();
@@ -321,6 +341,7 @@ export class BassTabApp {
       <button id="btnOpenLibrary" type="button" aria-label="曲ライブラリを開く" style="${BTN}">📚 ライブラリ</button>
       <button id="btnRecord" type="button" aria-label="マイクで録音して採譜" aria-pressed="false" style="${BTN}">🎤 録音して採譜</button>
       <button id="btnAddStem" type="button" aria-label="ベースステムを追加" style="${BTN} display:none;">🎚 ベースステムを追加</button>
+      <button id="btnDeleteLowConf" type="button" aria-label="信頼度が低めの音符をまとめて削除" style="${BTN}">🧹 低信頼を一括削除</button>
       <button id="btnAutoScroll" type="button" aria-label="自動スクロールの切り替え" aria-pressed="true" style="${BTN}">⇥ 自動スクロール: ON</button>
       <button id="btnMetronome" type="button" aria-label="メトロノームの切り替え" aria-pressed="false" style="${BTN}">🥁 メトロノーム: OFF</button>
       <button id="btnCountIn" type="button" aria-label="カウントインの切り替え" aria-pressed="false" style="${BTN}">⏱ カウントイン: OFF</button>
@@ -422,6 +443,7 @@ export class BassTabApp {
       e.target.value = '';
       if (stemFile) this.addStemFile(stemFile);
     });
+    bar.querySelector('#btnDeleteLowConf').addEventListener('click', () => this.deleteLowConfidenceNotes());
     bar.querySelector('#btnExportTab').addEventListener('click', () => {
       this.exportTextTab();
     });
@@ -724,7 +746,7 @@ export class BassTabApp {
       <div style="font-weight:700; margin-top:10px;">3. 譜面の操作</div>
       <div>譜面をドラッグすると左右にスクロールできます。クリックでその位置へジャンプ (シーク) します。「自動スクロール」をOFFにすると、再生中も譜面が追従しません。譜面の上の細いバーからも位置移動できます。</div>
       <div style="font-weight:700; margin-top:10px;">4. 音符の編集</div>
-      <div>譜面の音符をクリックすると選択でき、編集バーで半音の上げ下げ・16分単位の移動・追加・弦変更・削除ができます。半音を変えると運指 (弦とフレット) は自動で最も近い位置に直ります。キー操作: ←→ 移動 (Shiftで4つ分) / ↑↓ 半音 / Insert 追加 / S 弦変更 / Delete 削除。</div>
+      <div>譜面の音符をクリックすると選択でき、編集バーで半音の上げ下げ・16分単位の移動・追加・弦変更・削除ができます。半音を変えると運指 (弦とフレット) は自動で最も近い位置に直ります。キー操作: ←→ 移動 (Shiftで4つ分) / ↑↓ 半音 / Insert 追加 / S 弦変更 / Delete 削除。「🧹 低信頼を一括削除」は琥珀色の音符 (信頼度が低め) をまとめて消します。件数を確認してから削除します。</div>
       <div style="font-weight:700; margin-top:10px;">5. 指板</div>
       <div>下の指板はタップするとその音が鳴ります。再生中は今弾くべきフレットが光ります。</div>
       <div style="font-weight:700; margin-top:10px;">6. 練習サポート</div>
@@ -933,6 +955,30 @@ export class BassTabApp {
     if (this.tabRenderer) this.tabRenderer.setSelectedNote(-1);
     this.syncNotesAfterEdit();
     this.showToast('音符を削除しました');
+  }
+
+  /**
+   * 信頼度が低めの音符 (琥珀色) をまとめて削除する。
+   * 件数を出して確認してから消す (本当の音が混ざることがあるため)。
+   */
+  deleteLowConfidenceNotes() {
+    if (!this.currentTabNotes || this.currentTabNotes.length === 0) {
+      this.showToast('先に音声ファイルを読み込んでください');
+      return;
+    }
+    const { kept, removed } = partitionLowConfidenceNotes(this.currentTabNotes);
+    if (removed.length === 0) {
+      this.showToast('低信頼の音符はありませんでした');
+      return;
+    }
+    const ok = window.confirm(`信頼度が低めの音符が ${removed.length} 件あります。すべて削除しますか？\n本当の音が混ざっている場合もあります。削除は取り消せません。`);
+    if (!ok) return;
+    this.currentTabNotes = kept;
+    this.selectedNoteIndex = -1;
+    if (this.tabRenderer) this.tabRenderer.setSelectedNote(-1);
+    this.syncNotesAfterEdit();
+    this.updateEditBar();
+    this.showToast(`低信頼の音符を ${removed.length} 件削除しました`);
   }
 
   // 編集操作の基準テンポ (グリッド計算用)。未解析時はレンダラーのBPMで代替する
