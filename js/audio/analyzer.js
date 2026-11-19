@@ -364,6 +364,49 @@ export class AudioAnalyzer {
     // 短すぎるゴミ（30ms以下）の除去
     const filtered = rawNotes.filter(n => n.duration >= 0.06).map(n => ({ ...n }));
 
+    // A3: 検出ブレによる断片化の安定化 (境界のオンセット証拠でゲート)
+    // 隣接ノートの境界にアタック (RMSフラックス) が乏しければ、±1〜2半音のブレ分裂や
+    // 短いオクターブ跳びは同一音の検出ブレとみなし、持続の主体 (長い方) の音程に寄せる。
+    // 実在の音程変化はアタックを伴うため、境界フラックスが前ノート開始時の6割以上あれば触らない。
+    // 適用条件: ベース主体のクリーンな入力 (ステム/ペア解析・ソロ録音) のみ。
+    // フルミックスでは断片の多くが他楽器の漏れで、寄せると誤った音を伸ばしてしまうため、
+    // ノート信頼度 (フレーム clarity) の中央値が 0.85 未満の入力には適用しない
+    // (実測: ステム 0.92 / フルミックス 0.77)。
+    const confs = filtered.map(n => n.confidence ?? 0).sort((a, b) => a - b);
+    const medianConf = confs.length ? confs[Math.floor(confs.length / 2)] : 0;
+    const stabilizeEnabled = medianConf >= 0.85;
+    const fluxAt = (t) => {
+      if (!this._onsetCurve || !this._onsetCurve.flux || this._onsetCurve.flux.length === 0) return null;
+      const { hopSec, flux } = this._onsetCurve;
+      const k = Math.round(t / hopSec);
+      let m = 0;
+      for (let j = Math.max(0, k - 1); j <= Math.min(flux.length - 1, k + 1); j++) if (flux[j] > m) m = flux[j];
+      return m;
+    };
+    for (const n of filtered) n._startFlux = fluxAt(n.time);
+    for (let i = 1; stabilizeEnabled && i < filtered.length; i++) {
+      const prev = filtered[i - 1];
+      const cur = filtered[i];
+      const gap = cur.time - (prev.time + prev.duration);
+      if (gap > 0.05 || gap < -0.05) continue;
+      const delta = Math.abs(cur.midi - prev.midi);
+      if (delta === 0) continue;
+      const isOctave = delta === 12;
+      if (!isOctave && delta > 2) continue;
+      const boundaryFlux = fluxAt(cur.time);
+      const refFlux = prev._startFlux;
+      const weakOnset = (boundaryFlux === null || refFlux === null || refFlux <= 0)
+        ? (Math.min(prev.duration, cur.duration) < 0.09) // 曲線がなければ短い断片のみ保守的に寄せる
+        : boundaryFlux < refFlux * 0.6;
+      if (!weakOnset) continue;
+      if (isOctave) {
+        if (cur.duration <= prev.duration) cur.midi = prev.midi; else prev.midi = cur.midi;
+      } else {
+        if (cur.duration > prev.duration) prev.midi = cur.midi; else cur.midi = prev.midi;
+      }
+    }
+    for (const n of filtered) delete n._startFlux;
+
     // 短い逸脱の吸収: 両隣が同じ音程で、挟まれた短い音がオクターブ違い (±12) か
     // ごく短い (<90ms) 場合は、検出のブレとみなして両隣の音程に寄せる (後段で結合される)
     for (let i = 1; i < filtered.length - 1; i++) {
