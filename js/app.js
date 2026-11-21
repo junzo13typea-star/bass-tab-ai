@@ -13,6 +13,10 @@ import { PRESETS } from './presets.js';
 import { loadLibraryEntries, upsertLibraryEntry, removeLibraryEntry } from './library.js';
 import { MicRecorder, RECORD_MAX_SEC } from './recorder.js';
 import { registerServiceWorker } from './sw-update.js';
+import { installErrorGuard } from './error-guard.js';
+
+// 未捕捉例外でも真っ白にならないためのグローバルエラーハンドラ (U3)
+installErrorGuard();
 
 /**
  * ペア取り込み (原曲＋ベースステム) のファイル名がステムらしいか判定する。
