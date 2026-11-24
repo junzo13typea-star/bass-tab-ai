@@ -2019,6 +2019,7 @@ export class BassTabApp {
 
       this.controls.hideProgress();
       this.showToast(`🎉 「${fileName}」のベースTAB譜を生成しました！`);
+      this.flashTabReady();
 
     } catch (err) {
       // ユーザーがキャンセルした場合は失敗扱いにせず、静かに戻る
@@ -2079,6 +2080,19 @@ export class BassTabApp {
       this.player.setLoop(false, 0, 0);
       this.tabRenderer.setLoop(false, 0, 0);
     }
+  }
+
+  // TAB譜生成完了時のフィードバック (U6): TABビューを一度だけ光らせて
+  // 生成が終わったことを目で伝える。CSS側の .tab-view-container.tab-ready
+  // (MOTION-PATCH.md) がアニメーションを担い、ここではクラスの付け外しだけ行う。
+  flashTabReady() {
+    if (typeof document === 'undefined') return;
+    const el = document.getElementById('tabViewContainer');
+    if (!el || !el.classList) return;
+    el.classList.add('tab-ready');
+    if (this._tabReadyTimer) clearTimeout(this._tabReadyTimer);
+    // CSSのアニメーションは 1.4s × 2回 = 2.8s で終わるので、合わせて外す
+    this._tabReadyTimer = setTimeout(() => el.classList.remove('tab-ready'), 2800);
   }
 
   showToast(msg, durationMs = 3000) {

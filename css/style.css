@@ -1178,3 +1178,116 @@ body {
   pointer-events: none;
   z-index: 2;
 }
+/* ===================================================
+  夜間改善 U6 (2026-11-23 Muse)
+  動きの追加：画面遷移・押下感・プログレス・完了フィードバック
+  CSSのみの追記。JS・既存ルール・HTMLは不変。
+  完了フラッシュのクラス付け外しは js/app.js の flashTabReady() が行う。
+  =================================================== */
+
+/* --- 画面遷移：各セクションがふわりと立ち上がる（初回表示時） --- */
+.main-container > * {
+  animation: btFadeUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.main-container > *:nth-child(2) { animation-delay: 0.05s; }
+.main-container > *:nth-child(3) { animation-delay: 0.10s; }
+.main-container > *:nth-child(4) { animation-delay: 0.15s; }
+.main-container > *:nth-child(5) { animation-delay: 0.20s; }
+
+@keyframes btFadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- ボタンの押下感：ホバーで浮き、押下で沈む --- */
+.btn-secondary:hover {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+.btn-loop:active {
+  transform: translateY(1px);
+}
+.btn-mute-toggle:active {
+  transform: scale(0.94);
+}
+.preset-select {
+  transition: border-color 0.15s ease;
+}
+
+/* --- JS生成の白ボタン（編集バー・通知・使い方バー）の押下感 --- */
+#auditFixControls button,
+#noteEditBar button,
+#tabNotice button {
+  transition: transform 0.08s ease, filter 0.12s ease;
+}
+#auditFixControls button:active,
+#noteEditBar button:active,
+#tabNotice button:active {
+  transform: scale(0.96);
+  filter: brightness(0.97);
+}
+
+/* --- 空状態の入口：ドロップゾーンの押下感 --- */
+.drop-zone:active {
+  transform: scale(0.995);
+}
+
+/* --- フレットセル：タップした瞬間のフィードバック --- */
+.fret-cell:active {
+  background: rgba(56, 189, 248, 0.30);
+}
+
+/* --- 読み込み中：ローディングカードがポップイン --- */
+.loading-card {
+  animation: btCardPop 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes btCardPop {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* --- 読み込み中：解析プログレスバーに光の帯（シマー） --- */
+.loading-bar {
+  position: relative;
+  overflow: hidden;
+}
+.loading-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.45) 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: btBarShimmer 1.4s ease infinite;
+}
+
+@keyframes btBarShimmer {
+  to { transform: translateX(100%); }
+}
+
+/* --- 再生プログレス（TAB下の細いバー）：幅の変化をなめらかに --- */
+#tabProgressFill {
+  transition: width 0.25s ease;
+}
+
+/* --- 完了フィードバック：TAB生成完了時にTABビューがシアンに2回光る --- */
+.tab-view-container.tab-ready {
+  animation: btTabReadyGlow 1.4s ease-out 2;
+}
+
+@keyframes btTabReadyGlow {
+  0% { box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6), 0 0 0 0 rgba(56, 189, 248, 0); }
+  30% { box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6), 0 0 0 3px rgba(56, 189, 248, 0.55), 0 0 28px rgba(56, 189, 248, 0.45); }
+  100% { box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6), 0 0 0 0 rgba(56, 189, 248, 0); }
+}
+
+/* --- モーション軽減設定への配慮（既存ブロックへの追加） --- */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01s !important;
+    animation-iteration-count: 1 !important;
+  }
+  .loading-bar::after {
+    animation: none;
+  }
+}
