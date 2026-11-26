@@ -9,6 +9,7 @@ export const PRESETS = [
   {
     id: "rock-drive",
     title: "🎸 Classic Rock Drive (8ビート王道ルート弾き)",
+    short: "ロック 8ビート",
     genre: "Rock",
     bpm: 128,
     desc: "Am ➔ F ➔ C ➔ G の疾走感あふれる8ビート・ストレートドライブ。ピック弾きや指弾きの練習に最適！",
@@ -58,6 +59,7 @@ export const PRESETS = [
   {
     id: "funk-slap",
     title: "⚡️ Funky Slap Groove (スラップ＆プル)",
+    short: "ファンク・スラップ",
     genre: "Funk",
     bpm: 104,
     desc: "親指サムピングの重低音(Low-E)と人差し指プル(Octave)のキレ味抜群なファンク・グルーヴ！",
@@ -86,6 +88,7 @@ export const PRESETS = [
   {
     id: "jazz-walk",
     title: "🎷 Walking Jazz Bass (4ビート・スイング)",
+    short: "ジャズ・ウォーキング",
     genre: "Jazz",
     bpm: 120,
     desc: "Fブルース進行を4分音符で優雅に歩くウォーキング・ベースライン。コードトーンとアプローチノートの極意。",
@@ -119,6 +122,7 @@ export const PRESETS = [
   {
     id: "neo-soul",
     title: "✨ Neo-Soul / City Groove (レイドバック・ファンク)",
+    short: "ネオソウル",
     genre: "Neo-Soul",
     bpm: 88,
     desc: "後ろノリのレイドバック感と艶やかな高音ダブルストップ。モダンで洗練されたオシャレなベースライン。",

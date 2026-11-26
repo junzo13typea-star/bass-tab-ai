@@ -59,6 +59,15 @@ export function shouldWarnPairMismatch(originalDuration, stemDuration) {
 }
 
 /**
+ * 初回体験カード (プリセット試奏チップ＋ペア取り込み案内) を出すか決める (純関数)。
+ * - 自分の曲を読み込んだ後 (hasOwnFile) や保存TABの復元後 (isGeneratedTab) は出さない
+ * - × で閉じたことがある (dismissed) 場合は出さない
+ */
+export function shouldShowFirstExperience({ isGeneratedTab, hasOwnFile, dismissed } = {}) {
+  return !isGeneratedTab && !hasOwnFile && !dismissed;
+}
+
+/**
  * 低信頼のしきい値。TAB描画側 (tab-renderer.js) の琥珀色判定
  * (confidence < 0.8) と必ず一致させること。
  */
@@ -146,6 +155,7 @@ export class BassTabApp {
     this.domStretchBadge = null;  // ピッチ保持の状態バッジ
     this.domNotice = null;        // 譜面エリアの恒常通知 (検出0件など)
     this.domHelp = null;          // 使い方モーダル
+    this.domFirstExp = null;      // 初回体験カード (U10)
     this._toastTimer = null;
   }
 
@@ -221,6 +231,9 @@ export class BassTabApp {
 
     // 6.5 前回生成したTABが保存されていれば復元する
     this.restoreSavedTab();
+
+    // 6.55 初回体験カード (プリセット試奏チップ＋ペア取り込み案内)
+    this.initFirstExperience();
 
     // 6.6 初回のみ使い方モーダルを自動表示する
     this.maybeShowFirstRunHelp();
@@ -781,7 +794,7 @@ export class BassTabApp {
       <div style="font-weight:700; margin-top:10px;">1. まずはプリセットで試す</div>
       <div>上のプリセット一覧から曲を選ぶと、すぐにTAB譜の再生が始まります。スペースキーでも再生/一時停止できます。</div>
       <div style="font-weight:700; margin-top:10px;">2. 自分の曲からTABを作る</div>
-      <div>音声ファイル (MP3/WAVなど) をドロップまたは選択すると、AIがベースラインを自動で採譜します。検出できないときは「検出感度」を上げて「🔁 再解析」を押してください。感度は、音が小さい・埋もれ気味の曲では「高」、ノイズを拾いすぎるときは「低」が向いています。</div>
+      <div>音声ファイル (MP3/WAVなど) をドロップまたは選択すると、AIがベースラインを自動で採譜します。原曲とベースだけの音源 (ステム) の2ファイルを一緒に取り込むと、検出精度が大きく上がります。検出できないときは「検出感度」を上げて「🔁 再解析」を押してください。感度は、音が小さい・埋もれ気味の曲では「高」、ノイズを拾いすぎるときは「低」が向いています。</div>
       <div style="font-weight:700; margin-top:10px;">3. 譜面の操作</div>
       <div>譜面をドラッグすると左右にスクロールできます。クリックでその位置へジャンプ (シーク) します。「自動スクロール」をOFFにすると、再生中も譜面が追従しません。譜面の上の細いバーからも位置移動できます。</div>
       <div style="font-weight:700; margin-top:10px;">4. 音符の編集</div>
@@ -826,6 +839,119 @@ export class BassTabApp {
       catch (e) { return; }
       this.openHelp();
     }
+  }
+
+  /**
+   * 初回体験カードを出すかどうか (localStorage の閉じた記録を読む。読めなければ出さない扱い)
+   */
+  isFirstExperienceDismissed() {
+    try { return localStorage.getItem('basstab.firstExpDismissed.v1') === '1'; }
+    catch (e) { return true; }
+  }
+
+  /**
+   * 初回体験カードを隠す (自分の曲を読み込んだとき)。要素が無くても落ちない。
+   */
+  hideFirstExperience() {
+    const card = this.domFirstExp;
+    if (card && card.style) card.style.display = 'none';
+  }
+
+  /**
+   * 初回体験カードを閉じる (×ボタン)。次回以降は出さない。
+   */
+  dismissFirstExperience() {
+    try { localStorage.setItem('basstab.firstExpDismissed.v1', '1'); } catch (e) { /* 保存失敗は無視 */ }
+    this.hideFirstExperience();
+  }
+
+  /**
+   * 初回体験カードを構築する (U10。index.html は変更しない)。
+   * ドロップゾーン直下に置く: プリセットのワンタップ試奏チップ 4件と、
+   * ペア取り込み (原曲＋ベースステム) の案内。自分の曲を読み込むか
+   * × で閉じるまで表示し、プリセットを試すだけでは消えない。
+   */
+  initFirstExperience() {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
+    if (!shouldShowFirstExperience({
+      isGeneratedTab: this.isGeneratedTab,
+      hasOwnFile: !!(this.lastPair && this.lastPair.original),
+      dismissed: this.isFirstExperienceDismissed(),
+    })) return;
+
+    const card = document.createElement('section');
+    card.id = 'firstExperienceCard';
+    card.className = 'first-exp-card';
+    card.setAttribute('aria-label', 'はじめに');
+
+    const head = document.createElement('div');
+    head.className = 'bt-firstexp-head';
+    const title = document.createElement('div');
+    title.className = 'bt-firstexp-title';
+    title.textContent = '🎸 まずはワンタップで試す';
+    const dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button';
+    dismissBtn.className = 'bt-firstexp-dismiss';
+    dismissBtn.setAttribute('aria-label', 'この案内を閉じる');
+    dismissBtn.textContent = '✕';
+    dismissBtn.addEventListener('click', () => this.dismissFirstExperience());
+    head.appendChild(title);
+    head.appendChild(dismissBtn);
+    card.appendChild(head);
+
+    const sub = document.createElement('p');
+    sub.className = 'bt-firstexp-sub';
+    sub.textContent = '音声ファイルがなくても、プリセット曲ですぐTAB譜を触れます。';
+    card.appendChild(sub);
+
+    const chips = document.createElement('div');
+    chips.className = 'bt-preset-chips';
+    for (const p of PRESETS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bt-preset-chip';
+      btn.setAttribute('aria-label', `プリセット「${p.short || p.genre}」を試す`);
+      btn.innerHTML = `<span class="bt-chip-genre">${p.genre}</span><span class="bt-chip-name">${p.short || p.genre}</span><span class="bt-chip-bpm">${p.bpm} BPM</span>`;
+      btn.addEventListener('click', () => {
+        this.loadPreset(p.id);
+        // ヘッダーのセレクト表示も同期する (無い環境では何もしない)
+        const sel = this.controls && this.controls.dom && this.controls.dom.presetSelect;
+        if (sel) sel.value = p.id;
+      });
+      chips.appendChild(btn);
+    }
+    card.appendChild(chips);
+
+    const pairBox = document.createElement('div');
+    pairBox.className = 'bt-pair-box';
+    pairBox.innerHTML = `
+      <div class="bt-pair-title">🎚 自分の曲は「原曲＋ベースステム」の2ファイルがおすすめ</div>
+      <ul>
+        <li>精度が大きく上がります（実測：低信頼の音符 52.5% → 9.9%）</li>
+        <li>2ファイルをまとめてドロップ／選択するだけ</li>
+        <li>ファイル名に bass / stem / ベース が入っていれば自動でステム判定</li>
+        <li>後から「🎚 ベースステムを追加」でも追加できます</li>
+      </ul>
+      <div class="bt-pair-note">※ ステムは DAW などで書き出したベースだけの音源ファイルです。長さが 0.5 秒以上ずれると警告が出ます。</div>
+    `;
+    card.appendChild(pairBox);
+
+    // ドロップゾーンのセクション直下に挿入する (無ければTABビューの直前、最後は body 末尾)
+    const dropZone = document.getElementById('dropZone');
+    const section = dropZone && dropZone.parentNode;
+    if (section && section.parentNode) {
+      section.parentNode.insertBefore(card, section.nextSibling);
+    } else {
+      const tabContainer = document.getElementById('tabViewContainer');
+      if (tabContainer && tabContainer.parentNode) {
+        tabContainer.parentNode.insertBefore(card, tabContainer);
+      } else if (document.body) {
+        document.body.appendChild(card);
+      } else {
+        return;
+      }
+    }
+    this.domFirstExp = card;
   }
 
   /**
@@ -1918,6 +2044,7 @@ export class BassTabApp {
     if (!file) return;
     this.player.stop();
     this.hideTabNotice();
+    this.hideFirstExperience();
     this.lastPair = { original: file, stem: stemFile || null }; // 感度・チューニング変更後の再解析用
     this.updateStemButton();
 

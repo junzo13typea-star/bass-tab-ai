@@ -1291,3 +1291,137 @@ body {
     animation: none;
   }
 }
+
+/* ===== U10 初回体験: プリセット試奏チップ＋ペア取り込み案内 (SW v24) ===== */
+.first-exp-card {
+  margin: 12px 0;
+  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  animation: btFadeUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.bt-firstexp-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.bt-firstexp-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.bt-firstexp-dismiss {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 9px;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.bt-firstexp-dismiss:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.bt-firstexp-dismiss:active {
+  transform: scale(0.92);
+}
+
+.bt-firstexp-sub {
+  margin: 4px 0 10px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.bt-preset-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bt-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid #7dd3fc;
+  background: #f0f9ff;
+  color: #0369a1;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.bt-preset-chip:hover {
+  background: #e0f2fe;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(56, 189, 248, 0.35);
+}
+
+.bt-preset-chip:active {
+  transform: scale(0.97);
+}
+
+.bt-chip-genre {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #0284c7;
+}
+
+.bt-chip-name {
+  font-weight: 700;
+}
+
+.bt-chip-bpm {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.bt-pair-box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #0f172a;
+}
+
+.bt-pair-title {
+  font-weight: 700;
+}
+
+.bt-pair-box ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.bt-pair-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #475569;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .first-exp-card {
+    animation: none;
+  }
+  .bt-preset-chip {
+    transition: none;
+  }
+}
