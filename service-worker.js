@@ -1,5 +1,5 @@
 // BassTab AI - Service Worker
-const CACHE_NAME = 'basstab-ai-v24';
+const CACHE_NAME = 'basstab-ai-v25'; // U13: PWA最終点検でアイコンをPNG化したため更新
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -19,7 +19,11 @@ const ASSETS_TO_CACHE = [
   './js/ui/fretboard.js',
   './js/ui/controls.js',
   './manifest.json',
-  './icon.svg'
+  './icon.svg',
+  './icon-192.png',
+  './icon-512.png',
+  './icon-maskable-512.png',
+  './apple-touch-icon.png'
 ];
 
 self.addEventListener('install', (event) => {
